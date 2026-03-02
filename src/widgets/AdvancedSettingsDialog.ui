@@ -1,0 +1,377 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>AdvancedSettingsDialog</class>
+ <widget class="QDialog" name="AdvancedSettingsDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+        <width>980</width>
+        <height>680</height>
+   </rect>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayoutRoot">
+   <property name="spacing"><number>0</number></property>
+   <property name="leftMargin"><number>0</number></property>
+   <property name="topMargin"><number>0</number></property>
+   <property name="rightMargin"><number>0</number></property>
+   <property name="bottomMargin"><number>0</number></property>
+   <item>
+    <widget class="QWidget" name="customTitleBar" native="true">
+     <layout class="QHBoxLayout" name="horizontalLayoutTitle">
+      <property name="leftMargin"><number>12</number></property>
+      <property name="topMargin"><number>6</number></property>
+      <property name="rightMargin"><number>8</number></property>
+      <property name="bottomMargin"><number>6</number></property>
+      <item><widget class="QLabel" name="lblTitle"><property name="text"><string>Advanced Settings</string></property></widget></item>
+      <item><spacer name="horizontalSpacerTitle"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+      <item><widget class="QPushButton" name="btnClose"><property name="text"><string>×</string></property></widget></item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QWidget" name="dialogBody" native="true">
+     <layout class="QVBoxLayout" name="verticalLayoutBody">
+      <property name="spacing"><number>10</number></property>
+      <property name="leftMargin"><number>12</number></property>
+      <property name="topMargin"><number>10</number></property>
+      <property name="rightMargin"><number>12</number></property>
+      <property name="bottomMargin"><number>12</number></property>
+      <item>
+       <widget class="QTabWidget" name="tabsMain">
+        <widget class="QWidget" name="tabDashboard">
+         <attribute name="title"><string>Dashboard / 仪表盘</string></attribute>
+         <layout class="QVBoxLayout" name="dashTabLayout">
+          <property name="leftMargin"><number>0</number></property>
+          <property name="topMargin"><number>0</number></property>
+          <property name="rightMargin"><number>0</number></property>
+          <property name="bottomMargin"><number>0</number></property>
+          <item>
+           <widget class="QScrollArea" name="dashScrollArea">
+            <property name="widgetResizable"><bool>true</bool></property>
+            <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
+            <widget class="QWidget" name="dashPage">
+             <layout class="QVBoxLayout" name="dashOuterLayout">
+              <property name="spacing"><number>10</number></property>
+              <item>
+               <layout class="QHBoxLayout" name="dashColumnsLayout">
+                <property name="spacing"><number>12</number></property>
+                <item>
+                 <layout class="QVBoxLayout" name="leftColumnLayout">
+                  <property name="spacing"><number>10</number></property>
+                  <item>
+                   <widget class="QWidget" name="cardGpuMem" native="true">
+                    <property name="card" stdset="0"><bool>true</bool></property>
+                    <layout class="QVBoxLayout" name="vlCardGpuMem">
+                     <property name="leftMargin"><number>10</number></property>
+                     <property name="topMargin"><number>10</number></property>
+                     <property name="rightMargin"><number>10</number></property>
+                     <property name="bottomMargin"><number>10</number></property>
+                     <item><widget class="QLabel" name="titleGpuMem"><property name="text"><string>GPU Memory / GPU 显存</string></property><property name="role" stdset="0"><string>cardTitle</string></property></widget></item>
+                     <item>
+                      <layout class="QFormLayout" name="formGpuMem">
+                       <item row="0" column="0"><widget class="QLabel" name="txtGpuUsage"><property name="text"><string>Usage / 使用率:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+                       <item row="0" column="1"><widget class="QProgressBar" name="m_barGpuMem"><property name="maximum"><number>100</number></property><property name="value"><number>0</number></property></widget></item>
+                       <item row="1" column="0"><widget class="QLabel" name="txtGpuDetail"><property name="text"><string>Detail / 详情:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+                       <item row="1" column="1"><widget class="QLabel" name="m_lblGpuMem"><property name="text"><string>-- / -- MiB</string></property></widget></item>
+                      </layout>
+                     </item>
+                    </layout>
+                   </widget>
+                  </item>
+                  <item>
+                   <widget class="QWidget" name="cardSlotPool" native="true">
+                    <property name="card" stdset="0"><bool>true</bool></property>
+                    <layout class="QVBoxLayout" name="vlCardSlotPool">
+                     <property name="leftMargin"><number>10</number></property>
+                     <property name="topMargin"><number>10</number></property>
+                     <property name="rightMargin"><number>10</number></property>
+                     <property name="bottomMargin"><number>10</number></property>
+                     <item><widget class="QLabel" name="titleSlotPool"><property name="text"><string>Slot Pool / 推理内存槽池</string></property><property name="role" stdset="0"><string>cardTitle</string></property></widget></item>
+                     <item>
+                      <layout class="QFormLayout" name="formSlotPool">
+                       <item row="0" column="0"><widget class="QLabel" name="txtSlotUsage"><property name="text"><string>Used / 已占用:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+                       <item row="0" column="1"><widget class="QProgressBar" name="m_barSlotPool"><property name="maximum"><number>100</number></property><property name="value"><number>0</number></property></widget></item>
+                       <item row="1" column="0"><widget class="QLabel" name="txtSlotDetail"><property name="text"><string>Detail / 详情:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+                       <item row="1" column="1"><widget class="QLabel" name="m_lblSlotPool"><property name="text"><string>-- / --</string></property></widget></item>
+                      </layout>
+                     </item>
+                    </layout>
+                   </widget>
+                  </item>
+                                    <item>
+                                     <widget class="QWidget" name="cardVram" native="true">
+                                        <property name="card" stdset="0"><bool>true</bool></property>
+                                        <layout class="QVBoxLayout" name="vlCardVram">
+                                         <property name="leftMargin"><number>10</number></property>
+                                         <property name="topMargin"><number>10</number></property>
+                                         <property name="rightMargin"><number>10</number></property>
+                                         <property name="bottomMargin"><number>10</number></property>
+                                         <item><widget class="QLabel" name="titleVram"><property name="text"><string>VRAM Breakdown / 显存拆分(估算)</string></property><property name="role" stdset="0"><string>cardTitle</string></property></widget></item>
+                                         <item>
+                                            <layout class="QFormLayout" name="formVram">
+                                             <item row="0" column="0"><widget class="QLabel" name="txtVramSlot"><property name="text"><string>Slot / 推理槽:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+                                             <item row="0" column="1"><widget class="QLabel" name="m_lblVramSlot"><property name="text"><string>--</string></property></widget></item>
+                                             <item row="1" column="0"><widget class="QLabel" name="txtVramCtx"><property name="text"><string>Context / 上下文:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+                                             <item row="1" column="1"><widget class="QLabel" name="m_lblVramCtx"><property name="text"><string>--</string></property></widget></item>
+                                             <item row="2" column="0"><widget class="QLabel" name="txtVramDec"><property name="text"><string>Decoder / 解码器:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+                                             <item row="2" column="1"><widget class="QLabel" name="m_lblVramDecoder"><property name="text"><string>--</string></property></widget></item>
+                                             <item row="3" column="0"><widget class="QLabel" name="txtVramOther"><property name="text"><string>Other / 其他:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+                                             <item row="3" column="1"><widget class="QLabel" name="m_lblVramOther"><property name="text"><string>--</string></property></widget></item>
+                                             <item row="4" column="0"><widget class="QLabel" name="txtDecCount"><property name="text"><string>Decoders (HW/SW):</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+                                             <item row="4" column="1"><widget class="QLabel" name="m_lblDecoderCount"><property name="text"><string>--</string></property></widget></item>
+                                            </layout>
+                                         </item>
+                                        </layout>
+                                     </widget>
+                                    </item>
+                  <item><spacer name="leftSpacer"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeType"><enum>QSizePolicy::Fixed</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>4</height></size></property></spacer></item>
+                 </layout>
+                </item>
+                <item>
+                 <layout class="QVBoxLayout" name="middleColumnLayout">
+                  <property name="spacing"><number>10</number></property>
+                  <item>
+                   <widget class="QWidget" name="cardThroughput" native="true">
+                    <property name="card" stdset="0"><bool>true</bool></property>
+                    <layout class="QVBoxLayout" name="vlCardThroughput">
+                     <property name="leftMargin"><number>10</number></property>
+                     <property name="topMargin"><number>10</number></property>
+                     <property name="rightMargin"><number>10</number></property>
+                     <property name="bottomMargin"><number>10</number></property>
+                     <item><widget class="QLabel" name="titleThroughput"><property name="text"><string>Throughput / 吞吐量 (每 2 秒采样)</string></property><property name="role" stdset="0"><string>cardTitle</string></property></widget></item>
+                     <item>
+                      <layout class="QFormLayout" name="formThroughput">
+                       <item row="0" column="0"><widget class="QLabel" name="txtInput"><property name="text"><string>Input FPS / 输入速率:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+                       <item row="0" column="1"><widget class="QLabel" name="m_lblDecodeFps"><property name="text"><string>0</string></property></widget></item>
+                       <item row="1" column="0"><widget class="QLabel" name="txtInfer"><property name="text"><string>Infer FPS / 推理帧率:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+                       <item row="1" column="1"><widget class="QLabel" name="m_lblInferFps"><property name="text"><string>0</string></property></widget></item>
+                       <item row="2" column="0"><widget class="QLabel" name="txtDisplay"><property name="text"><string>Display FPS / 显示帧率:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+                       <item row="2" column="1"><widget class="QLabel" name="m_lblDisplayFps"><property name="text"><string>0</string></property></widget></item>
+                       <item row="3" column="0"><widget class="QLabel" name="txtDetections"><property name="text"><string>Detections / 检测目标:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+                       <item row="3" column="1"><widget class="QLabel" name="m_lblDetections"><property name="text"><string>0</string></property></widget></item>
+                       <item row="4" column="0"><widget class="QLabel" name="txtDqPush"><property name="text"><string>DQ Push / 推入速率:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+                       <item row="4" column="1"><widget class="QLabel" name="m_lblDqPush"><property name="text"><string>0</string></property></widget></item>
+                       <item row="5" column="0"><widget class="QLabel" name="txtDqDrop"><property name="text"><string>DQ Dropped / 丢帧:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+                       <item row="5" column="1"><widget class="QLabel" name="m_lblDqDrop"><property name="text"><string>0</string></property></widget></item>
+                      </layout>
+                     </item>
+                    </layout>
+                   </widget>
+                  </item>
+                  <item>
+                   <widget class="QWidget" name="cardWorker" native="true">
+                    <property name="card" stdset="0"><bool>true</bool></property>
+                    <layout class="QVBoxLayout" name="vlCardWorker">
+                     <property name="leftMargin"><number>10</number></property>
+                     <property name="topMargin"><number>10</number></property>
+                     <property name="rightMargin"><number>10</number></property>
+                     <property name="bottomMargin"><number>10</number></property>
+                     <item><widget class="QLabel" name="titleWorker"><property name="text"><string>Worker Efficiency / 推理线程效率</string></property><property name="role" stdset="0"><string>cardTitle</string></property></widget></item>
+                     <item>
+                      <layout class="QFormLayout" name="formWorker">
+                       <item row="0" column="0"><widget class="QLabel" name="txtIdle"><property name="text"><string>Idle / 空闲率:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+                       <item row="0" column="1"><widget class="QLabel" name="m_lblWorkerIdle"><property name="text"><string>--</string></property></widget></item>
+                       <item row="1" column="0"><widget class="QLabel" name="txtBatch"><property name="text"><string>Avg Batch / 平均批量:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+                       <item row="1" column="1"><widget class="QLabel" name="m_lblBatchUtil"><property name="text"><string>--</string></property></widget></item>
+                       <item row="2" column="0"><widget class="QLabel" name="txtSlotWait"><property name="text"><string>Slot Wait / 槽等待:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+                       <item row="2" column="1"><widget class="QLabel" name="m_lblSlotWait"><property name="text"><string>--</string></property></widget></item>
+                       <item row="3" column="0"><widget class="QLabel" name="txtPreproc"><property name="text"><string>Preprocess / 预处理:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+                       <item row="3" column="1"><widget class="QLabel" name="m_lblPreprocTime"><property name="text"><string>--</string></property></widget></item>
+                       <item row="4" column="0"><widget class="QLabel" name="txtPeak"><property name="text"><string>Peak Slots / 峰值占用:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+                       <item row="4" column="1"><widget class="QLabel" name="m_lblPeakSlots"><property name="text"><string>--</string></property></widget></item>
+                       <item row="5" column="0"><widget class="QLabel" name="txtCtx"><property name="text"><string>TRT Ctx Pool / 上下文池:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+                       <item row="5" column="1"><widget class="QLabel" name="m_lblCtxPool"><property name="text"><string>--</string></property></widget></item>
+                      </layout>
+                     </item>
+                    </layout>
+                   </widget>
+                  </item>
+                  <item><spacer name="middleSpacer"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeType"><enum>QSizePolicy::Fixed</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>4</height></size></property></spacer></item>
+                 </layout>
+                </item>
+                <item>
+                 <layout class="QVBoxLayout" name="rightColumnLayout">
+                  <property name="spacing"><number>10</number></property>
+                  <item>
+                   <widget class="QWidget" name="cardDetQueue" native="true">
+                    <property name="card" stdset="0"><bool>true</bool></property>
+                    <layout class="QVBoxLayout" name="vlCardDetQueue">
+                     <property name="leftMargin"><number>10</number></property>
+                     <property name="topMargin"><number>10</number></property>
+                     <property name="rightMargin"><number>10</number></property>
+                     <property name="bottomMargin"><number>10</number></property>
+                     <item><widget class="QLabel" name="titleDetQueue"><property name="text"><string>Detection Queue / 检测队列</string></property><property name="role" stdset="0"><string>cardTitle</string></property></widget></item>
+                     <item>
+                      <layout class="QFormLayout" name="formDetQueue">
+                       <item row="0" column="0"><widget class="QLabel" name="txtDetFill"><property name="text"><string>Fill / 填充率:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+                       <item row="0" column="1"><widget class="QProgressBar" name="m_barDetQueue"><property name="maximum"><number>100</number></property><property name="value"><number>0</number></property></widget></item>
+                       <item row="1" column="0"><widget class="QLabel" name="txtDetDetail"><property name="text"><string>Detail / 详情:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+                       <item row="1" column="1"><widget class="QLabel" name="m_lblDetQueue"><property name="text"><string>-- / --</string></property></widget></item>
+                      </layout>
+                     </item>
+                    </layout>
+                   </widget>
+                  </item>
+                  <item>
+                   <widget class="QWidget" name="cardBottleneck" native="true">
+                    <property name="card" stdset="0"><bool>true</bool></property>
+                    <layout class="QVBoxLayout" name="vlCardBottleneck">
+                     <property name="leftMargin"><number>10</number></property>
+                     <property name="topMargin"><number>10</number></property>
+                     <property name="rightMargin"><number>10</number></property>
+                     <property name="bottomMargin"><number>10</number></property>
+                     <item><widget class="QLabel" name="titleBottleneck"><property name="text"><string>Bottleneck / 瓶颈分析</string></property><property name="role" stdset="0"><string>cardTitle</string></property></widget></item>
+                     <item>
+                      <widget class="QScrollArea" name="bottleneckScroll">
+                       <property name="widgetResizable"><bool>true</bool></property>
+                       <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
+                       <widget class="QWidget" name="bottleneckContent">
+                        <layout class="QVBoxLayout" name="bottleneckContentLayout">
+                         <property name="leftMargin"><number>0</number></property>
+                         <property name="topMargin"><number>0</number></property>
+                         <property name="rightMargin"><number>0</number></property>
+                         <property name="bottomMargin"><number>0</number></property>
+                         <item><widget class="QLabel" name="m_lblBottleneck"><property name="text"><string>--</string></property><property name="wordWrap"><bool>true</bool></property><property name="alignment"><set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignTop</set></property></widget></item>
+                         <item><spacer name="bottleneckSpacer"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>40</height></size></property></spacer></item>
+                        </layout>
+                       </widget>
+                      </widget>
+                     </item>
+                    </layout>
+                   </widget>
+                  </item>
+                  <item><spacer name="rightSpacer"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeType"><enum>QSizePolicy::Fixed</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>4</height></size></property></spacer></item>
+                 </layout>
+                </item>
+               </layout>
+              </item>
+              <item>
+               <widget class="QWidget" name="cardLoadTest" native="true">
+                <property name="card" stdset="0"><bool>true</bool></property>
+                <layout class="QVBoxLayout" name="vlCardLoadTest">
+                 <property name="leftMargin"><number>10</number></property>
+                 <property name="topMargin"><number>10</number></property>
+                 <property name="rightMargin"><number>10</number></property>
+                 <property name="bottomMargin"><number>10</number></property>
+                 <item><widget class="QLabel" name="titleLoadTest"><property name="text"><string>Real Decode Test / 真实解码压测</string></property><property name="role" stdset="0"><string>cardTitle</string></property></widget></item>
+                 <item>
+                  <layout class="QHBoxLayout" name="hlLoadParams">
+                   <item><widget class="QLabel" name="m_lblLoadLayout"><property name="text"><string>Layout/布局:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+                   <item><widget class="QComboBox" name="m_comboLoadLayout"><item><property name="text"><string>1x1 (1 ch)</string></property></item><item><property name="text"><string>2x2 (4 ch)</string></property></item><item><property name="text"><string>3x3 (9 ch)</string></property></item></widget></item>
+                   <item><widget class="QLabel" name="txtFps"><property name="text"><string>FPS:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+                   <item><widget class="QSpinBox" name="m_spinLoadFps"><property name="minimum"><number>1</number></property><property name="maximum"><number>9999</number></property><property name="value"><number>30</number></property></widget></item>
+                   <item><widget class="QLabel" name="txtDuration"><property name="text"><string>Dur/时长:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+                   <item><widget class="QSpinBox" name="m_spinLoadDuration"><property name="minimum"><number>5</number></property><property name="maximum"><number>300</number></property><property name="value"><number>30</number></property><property name="suffix"><string> s</string></property></widget></item>
+                   <item><widget class="QPushButton" name="m_btnLoadTest"><property name="text"><string>▶ Start</string></property></widget></item>
+                   <item><widget class="QPushButton" name="m_btnStopTest"><property name="enabled"><bool>false</bool></property><property name="text"><string>■ Stop</string></property></widget></item>
+                   <item><spacer name="loadSpacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+                  </layout>
+                 </item>
+                 <item><widget class="QLabel" name="m_lblLoadTest"><property name="text"><string>Ready / 就绪</string></property><property name="wordWrap"><bool>true</bool></property></widget></item>
+                </layout>
+               </widget>
+              </item>
+              <item>
+               <layout class="QHBoxLayout" name="dashCopyLayout">
+                <item><spacer name="dashCopySpacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+                <item><widget class="QPushButton" name="m_btnCopyDash"><property name="text"><string>Copy Dashboard / 复制仪表盘</string></property></widget></item>
+               </layout>
+              </item>
+             </layout>
+            </widget>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+        <widget class="QWidget" name="tabSettings">
+         <attribute name="title"><string>Settings / 设置</string></attribute>
+         <layout class="QVBoxLayout" name="settingsLayout">
+          <item>
+           <widget class="QWidget" name="cardPipelineParams" native="true">
+            <property name="card" stdset="0"><bool>true</bool></property>
+            <layout class="QVBoxLayout" name="vlCardParams">
+             <property name="leftMargin"><number>10</number></property>
+             <property name="topMargin"><number>10</number></property>
+             <property name="rightMargin"><number>10</number></property>
+             <property name="bottomMargin"><number>10</number></property>
+             <item><widget class="QLabel" name="titleParams"><property name="text"><string>Pipeline Parameters / 管线参数</string></property><property name="role" stdset="0"><string>cardTitle</string></property></widget></item>
+             <item>
+              <layout class="QFormLayout" name="formPipelineParams">
+               <item row="0" column="0"><widget class="QLabel" name="txtSlots"><property name="text"><string>Base Slots / 基础槽位:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+               <item row="0" column="1"><widget class="QSpinBox" name="m_spinSlots"><property name="minimum"><number>1</number></property><property name="maximum"><number>16</number></property><property name="value"><number>2</number></property></widget></item>
+               <item row="1" column="0"><widget class="QLabel" name="txtWorkers"><property name="text"><string>Worker Count / 推理线程:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+               <item row="1" column="1"><widget class="QSpinBox" name="m_spinWorkerCount"><property name="minimum"><number>0</number></property><property name="maximum"><number>16</number></property><property name="specialValueText"><string>Auto / 自动</string></property><property name="value"><number>0</number></property></widget></item>
+               <item row="2" column="0"><widget class="QLabel" name="txtBatchParam"><property name="text"><string>Worker Max Batch / 最大批量:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+               <item row="2" column="1"><widget class="QSpinBox" name="m_spinBatch"><property name="minimum"><number>1</number></property><property name="maximum"><number>16</number></property><property name="value"><number>16</number></property></widget></item>
+               <item row="3" column="0"><widget class="QLabel" name="txtCtxPoolParam"><property name="text"><string>Context Pool / 上下文池:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+               <item row="3" column="1"><widget class="QSpinBox" name="m_spinContextPool"><property name="minimum"><number>0</number></property><property name="maximum"><number>8</number></property><property name="specialValueText"><string>Auto / 自动</string></property><property name="value"><number>0</number></property></widget></item>
+               <item row="4" column="0"><widget class="QLabel" name="txtStats"><property name="text"><string>Stats Interval / 统计间隔:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+               <item row="4" column="1"><widget class="QSpinBox" name="m_spinStatsInterval"><property name="minimum"><number>1</number></property><property name="maximum"><number>60</number></property><property name="value"><number>5</number></property><property name="suffix"><string> s</string></property></widget></item>
+              </layout>
+             </item>
+            </layout>
+           </widget>
+          </item>
+          <item>
+           <widget class="QWidget" name="cardModelClasses" native="true">
+            <property name="card" stdset="0"><bool>true</bool></property>
+            <layout class="QVBoxLayout" name="vlCardModel">
+             <property name="leftMargin"><number>10</number></property>
+             <property name="topMargin"><number>10</number></property>
+             <property name="rightMargin"><number>10</number></property>
+             <property name="bottomMargin"><number>10</number></property>
+             <item><widget class="QLabel" name="titleModel"><property name="text"><string>Model &amp; Classes / 模型与类别</string></property><property name="role" stdset="0"><string>cardTitle</string></property></widget></item>
+             <item>
+              <layout class="QFormLayout" name="formModelClasses">
+               <item row="0" column="0"><widget class="QLabel" name="txtModel"><property name="text"><string>Model / 模型路径:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+               <item row="0" column="1">
+                <widget class="QWidget" name="rowModel" native="true">
+                 <layout class="QHBoxLayout" name="hlModel">
+                  <property name="leftMargin"><number>0</number></property>
+                  <property name="topMargin"><number>0</number></property>
+                  <property name="rightMargin"><number>0</number></property>
+                  <property name="bottomMargin"><number>0</number></property>
+                  <item><widget class="QLineEdit" name="m_editModelPath"><property name="placeholderText"><string>path/to/model.engine</string></property></widget></item>
+                  <item><widget class="QPushButton" name="m_btnBrowseModel"><property name="text"><string>Browse...</string></property></widget></item>
+                 </layout>
+                </widget>
+               </item>
+               <item row="1" column="0"><widget class="QLabel" name="txtClasses"><property name="text"><string>Classes / 类别路径:</string></property><property name="role" stdset="0"><string>rowTitle</string></property></widget></item>
+               <item row="1" column="1">
+                <widget class="QWidget" name="rowClasses" native="true">
+                 <layout class="QHBoxLayout" name="hlClasses">
+                  <property name="leftMargin"><number>0</number></property>
+                  <property name="topMargin"><number>0</number></property>
+                  <property name="rightMargin"><number>0</number></property>
+                  <property name="bottomMargin"><number>0</number></property>
+                  <item><widget class="QLineEdit" name="m_editClassesPath"><property name="placeholderText"><string>path/to/classes.txt</string></property></widget></item>
+                  <item><widget class="QPushButton" name="m_btnBrowseClasses"><property name="text"><string>Browse...</string></property></widget></item>
+                 </layout>
+                </widget>
+               </item>
+              </layout>
+             </item>
+            </layout>
+           </widget>
+          </item>
+          <item>
+           <layout class="QHBoxLayout" name="rowActions">
+            <item><spacer name="actionSpacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+            <item><widget class="QPushButton" name="m_btnDefaults"><property name="text"><string>Restore Defaults / 恢复默认</string></property></widget></item>
+            <item><widget class="QPushButton" name="m_btnApply"><property name="text"><string>Apply &amp;&amp; Save / 应用并保存</string></property><property name="default"><bool>true</bool></property></widget></item>
+           </layout>
+          </item>
+          <item><spacer name="settingsSpacer"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>40</height></size></property></spacer></item>
+         </layout>
+        </widget>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
