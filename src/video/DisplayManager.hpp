@@ -6,6 +6,7 @@
 #include <QMap>
 #include <mutex>
 #include <QThread>
+#include <atomic>
 #include "src/core/FrameQueue.hpp"
 
 extern "C" {
@@ -37,6 +38,7 @@ public:
     std::atomic<int> current_w{0};
     std::atomic<int> current_h{0};
     std::atomic<int> current_pitch{0};
+    std::atomic<int> current_format{AV_PIX_FMT_NONE};
 
 private:
     int channel_id_;
@@ -55,6 +57,7 @@ private:
     void* gpu_buffer_ = nullptr;
     int gpu_width_ = 0;
     int gpu_height_ = 0;
+    size_t gpu_buffer_bytes_ = 0;
 
 };
 

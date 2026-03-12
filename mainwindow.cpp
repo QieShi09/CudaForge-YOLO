@@ -18,15 +18,17 @@
 #include <QPushButton>
 #include <QVBoxLayout>
 #include "../engine/TRTDetector.hpp"
-#include "src/core/DetectionQueue.hpp"
+#include "src/core/SlotQueue.hpp"
 #include "src/core/MemoryManager.hpp"
 #include "src/core/DetectionResults.hpp"
 #include "src/core/PipelineStats.hpp"
+#include "src/core/NvtxUtils.hpp"
 #include <chrono>
 #include <QFile>
 #include <algorithm>
 #include <QTextStream>
 #include <cuda_runtime.h>
+#include <nvtx3/nvToolsExt.h>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -107,8 +109,9 @@ MainWindow::MainWindow(QWidget *parent)
         auto s = AdvancedSettingsDialog::loadFromDisk();
         m_baseSlots       = s.baseSlots;
         m_workerCountSetting = s.workerCount;   // 之前漏掉了，导致每次启动都是 Auto
+        m_inferenceStreams = s.inferenceStreams;
         m_workerMaxBatch  = s.workerMaxBatch;
-        m_contextPoolSize = s.contextPoolSize;
+        m_contextPoolSize = 1;
         m_modelPath       = s.modelPath;
         m_classesPath     = s.classesPath;
     }
@@ -207,6 +210,22 @@ MainWindow::~MainWindow()
     stopDetection();
     TRTDetector::getInstance().shutdown();
     delete ui;
+}
+
+int MainWindow::activeConfiguredChannels() const
+{
+    int cnt = 0;
+    for (auto it = m_channelSettings.constBegin(); it != m_channelSettings.constEnd(); ++it) {
+        if (!it.value().sourcePath.trimmed().isEmpty()) ++cnt;
+    }
+    if (cnt <= 0) cnt = std::max(1, static_cast<int>(m_decoders.size()));
+    return std::max(1, cnt);
+}
+
+int MainWindow::recommendedSlotCount(int effectiveBatch) const
+{
+    (void)effectiveBatch;
+    return std::clamp(std::max(1, m_baseSlots), 1, 256);
 }
 
 // ============ 辅助函数 ============
@@ -342,6 +361,8 @@ void MainWindow::on_comboBox_layout_currentIndexChanged(int index)
 
     // 检测已开启时，按新布局调整 slot 数量
     if (m_detectionEnabled) {
+        int effectiveBatch = std::min(m_workerMaxBatch, TRTDetector::getInstance().getMaxBatch());
+        MemoryManager::getInstance().setBaseSlots(recommendedSlotCount(effectiveBatch));
         int gridMode = index + 1;
         MemoryManager::getInstance().adjustSlotsForMode(gridMode);
     }
@@ -776,14 +797,17 @@ void MainWindow::enterAnalysisMode(int channelIndex)
         m_analysisThread->start();
         
         // 绑定到独立解码器的数据源
-        bigVideo->setDataSource(&m_analysisWorker->current_ptr, &m_analysisWorker->current_w, 
-                                &m_analysisWorker->current_h, &m_analysisWorker->current_pitch);
+        bigVideo->setDataSource(&m_analysisWorker->current_ptr, &m_analysisWorker->current_w,
+                    &m_analysisWorker->current_h, &m_analysisWorker->current_pitch,
+                    &m_analysisWorker->current_format);
         bigVideo->setRefreshFPS(60);
     } else {
         // 直播/摄像头：共享网格模式的数据源
         DisplayWorker* worker = m_displayManager->getWorker(channelIndex);
         if (worker) {
-            bigVideo->setDataSource(&worker->current_ptr, &worker->current_w, &worker->current_h, &worker->current_pitch);
+            bigVideo->setDataSource(&worker->current_ptr, &worker->current_w,
+                                    &worker->current_h, &worker->current_pitch,
+                                    &worker->current_format);
             bigVideo->setRefreshFPS(60);
         }
     }
@@ -1151,7 +1175,7 @@ void MainWindow::on_btn_snapshot_clicked()
 
 void MainWindow::on_btn_start_clicked()
 {
-    // 开启检测：加载模型、启动 worker、打开 DetectionQueue
+    // 开启检测：加载模型、启动 worker、打开 SlotQueue
     startDetection();
 
     // 更新 UI 状态：防止重复点击 Start
@@ -1207,11 +1231,8 @@ void MainWindow::startDetection()
         }
         m_modelLoaded = true;
 
-        // 如果用户手动设置了 context pool 大小，调整到目标值
-        if (m_contextPoolSize > 0) {
-            TRTDetector::getInstance().resizeContextPool(
-                static_cast<size_t>(m_contextPoolSize));
-        }
+        // context 池规模随 stream 配置：每个 in-flight 推理独占 context，避免共享冲突
+        TRTDetector::getInstance().resizeContextPool(std::max(1, m_inferenceStreams));
     }
 
     // 2. 初始化内存池（只初始化一次）
@@ -1220,25 +1241,30 @@ void MainWindow::startDetection()
         int model_h = TRTDetector::getInstance().getInputH();
         // 输入缓冲: 按 workerMaxBatch 分配（实际推理时会取 min(workerMaxBatch, modelMaxBatch)）
         int effectiveBatch = std::min(m_workerMaxBatch, TRTDetector::getInstance().getMaxBatch());
+        int desiredSlots = recommendedSlotCount(effectiveBatch);
         size_t input_bytes = static_cast<size_t>(effectiveBatch) * 3 * model_w * model_h * sizeof(float);
         // 输出缓冲: 按 effectiveBatch 分配（严格匹配模型最大 batch 和设置 batch 中的较小值）
         size_t output_bytes = TRTDetector::getInstance().getOutputBytesPerBatch() * effectiveBatch;
-        if (!MemoryManager::getInstance().init(m_baseSlots, input_bytes, output_bytes)) {
+        size_t nv12_bytes = static_cast<size_t>(model_w) * model_h * 3 / 2;
+        if (!MemoryManager::getInstance().init(desiredSlots, input_bytes, output_bytes,
+                                               nv12_bytes, model_w, model_h, effectiveBatch)) {
             logSystemMessage("Failed to init MemoryManager.", 2);
             return;
         }
         m_memoryInited = true;
-        logSystemMessage(QString("MemoryManager: effectiveBatch=%1 (worker=%2, model=%3)")
-            .arg(effectiveBatch).arg(m_workerMaxBatch).arg(TRTDetector::getInstance().getMaxBatch()), 0);
+        logSystemMessage(QString("MemoryManager: slots=%1, effectiveBatch=%2 (worker=%3, model=%4)")
+            .arg(desiredSlots).arg(effectiveBatch).arg(m_workerMaxBatch).arg(TRTDetector::getInstance().getMaxBatch()), 0);
     }
 
     // 3. 依据网格模式调整 slot 数量
     int gridMode = ui->comboBox_layout->currentIndex() + 1; // 1,2,3 对应 1x1/2x2/3x3
+    int effectiveBatch = std::min(m_workerMaxBatch, TRTDetector::getInstance().getMaxBatch());
+    MemoryManager::getInstance().setBaseSlots(recommendedSlotCount(effectiveBatch));
     MemoryManager::getInstance().adjustSlotsForMode(gridMode);
 
-    // 4. 初始化并开启 DetectionQueue
-    DetectionQueue::getInstance().init(128);
-    DetectionQueue::getInstance().enable();
+    // 4. 初始化并开启 SlotQueue
+    SlotQueue::getInstance().init(128, static_cast<size_t>(effectiveBatch), std::chrono::milliseconds(3));
+    SlotQueue::getInstance().enable();
 
     // 重置累计统计（新一轮检测）
     DetectionResults::getInstance().resetAccumulated();
@@ -1258,14 +1284,11 @@ void MainWindow::startDetection()
 
     // 5. 启动 Worker
     // 策略：少 Worker + 大 batch  ≫  多 Worker × batch=1
-    //   · 1 个 Worker 即可充分利用 batch=16~32 的吞吐，仅占 1 个 TRT context（~475 MiB）
-    //   · 多 Worker 会争抢 DetectionQueue，导致每次只弹到 1 帧，浪费显存
-    int desiredWorkers;
-    if (m_workerCountSetting > 0) {
-        desiredWorkers = m_workerCountSetting; // 使用手动设置值
-    } else {
-        desiredWorkers = 1; // 自动：始终 1 个 Worker，靠大 batch 提升吞吐
-    }
+    //   · 1 个 Worker 即可充分利用 batch=16~32 的吞吐
+    //   · 并行度由 streams/context pool 决定，避免多 Worker 争抢队列
+    int desiredWorkers = 1; // 固定 1 worker，避免队列争抢
+    int effectiveStreams = std::max(1, m_inferenceStreams); // stream 数由高级设置决定
+    TRTDetector::getInstance().resizeContextPool(static_cast<size_t>(effectiveStreams));
     if (m_workerCount != desiredWorkers) {
         for (auto &w : m_workers) w->stop();
         m_workers.clear();
@@ -1273,14 +1296,20 @@ void MainWindow::startDetection()
     }
     if (m_workers.empty()) {
         for (int i = 0; i < m_workerCount; ++i) {
-            auto w = std::make_unique<Worker>(i, static_cast<size_t>(m_workerMaxBatch), std::chrono::milliseconds(50), desiredWorkers);
+            auto w = std::make_unique<Worker>(
+                i,
+                static_cast<size_t>(m_workerMaxBatch),
+                std::chrono::milliseconds(5),
+                desiredWorkers,
+                effectiveStreams);
             w->start();
             m_workers.push_back(std::move(w));
         }
     }
 
     m_detectionEnabled = true;
-    logSystemMessage(QString("Detection started. Workers=%1, batch=%2").arg(desiredWorkers).arg(m_workerMaxBatch), 0);
+    logSystemMessage(QString("Detection started. Workers=%1, streams/worker=%2, ctxPool=%3, batch=%4")
+        .arg(desiredWorkers).arg(effectiveStreams).arg(effectiveStreams).arg(m_workerMaxBatch), 0);
 
     // 图片源在启动检测后可能不再有新帧，重新启动一次通道以推入检测队列
     for (auto it = m_channelSettings.begin(); it != m_channelSettings.end(); ++it) {
@@ -1299,14 +1328,14 @@ void MainWindow::stopDetection(bool clear_results)
 {
     if (!m_detectionEnabled && m_workers.empty()) {
         if (clear_results) DetectionResults::getInstance().clearAll();
-        DetectionQueue::getInstance().disable();
-        DetectionQueue::getInstance().clear();
+        SlotQueue::getInstance().disable();
+        SlotQueue::getInstance().clear();
         return;
     }
 
     m_detectionEnabled = false;
-    DetectionQueue::getInstance().disable();
-    DetectionQueue::getInstance().clear();
+    SlotQueue::getInstance().disable();
+    SlotQueue::getInstance().clear();
 
     // 停止性能监控定时器
     if (m_pipelineStatsTimer) m_pipelineStatsTimer->stop();
@@ -1585,8 +1614,8 @@ void MainWindow::printPipelineStats()
     double usage_pct = (total_mem > 0) ? (100.0 * (total_mem - free_mem) / total_mem) : 0.0;
 
     // 队列状态
-    size_t dq_size = DetectionQueue::getInstance().size();
-    size_t dq_cap  = DetectionQueue::getInstance().capacity();
+    size_t dq_size = SlotQueue::getInstance().size();
+    size_t dq_cap  = SlotQueue::getInstance().capacity();
 
     // FrameQueue 各通道
     QString fqInfo;
@@ -1638,21 +1667,23 @@ void MainWindow::printPipelineStats()
     // 瓶颈分析
     const char* bottleneck = "Unknown";
     const char* recommendation = "";
+    double infer_ratio = (decode_fps > 1e-6) ? (infer_fps / decode_fps) : 1.0;
+    double drop_ps = dropped_dq / interval;
     if (decode_fps < 1.0 && infer_fps < 1.0) {
         bottleneck = "Idle (no active channels)";
         recommendation = "";
-    } else if (push_fps > 0 && infer_fps > 0 && idle_pct > 60.0) {
-        bottleneck = "DECODE-LIMITED (解码瓶颈)";
-        recommendation = "Workers are idle waiting for data. Increase decode sources or reduce skip_step.";
-    } else if (dq_size > dq_cap * 0.8) {
-        bottleneck = "INFERENCE-LIMITED (推理瓶颈)";
-        recommendation = "DQ is filling up. Add more Workers or increase context pool.";
+    } else if (infer_ratio < 0.92 && (drop_ps > 1.0 || dq_size > dq_cap * 0.2 || batch_util_pct < 45.0)) {
+        bottleneck = "INFERENCE-PARALLELISM-LIMITED (推理并行不足)";
+        recommendation = "Infer trails input. Keep 1 worker and align context pool with streams; improve micro-batching.";
+    } else if (idle_pct > 65.0 && infer_ratio >= 0.92) {
+        bottleneck = "INPUT-LIMITED (输入供给不足)";
+        recommendation = "Workers mostly idle while infer keeps up. Increase active channels or source FPS.";
     } else if (avg_slot_wait_ms > 5.0) {
         bottleneck = "SLOT-LIMITED (显存槽瓶颈)";
         recommendation = "Workers blocking on slot acquire. Increase base_slots.";
-    } else if (ctx_misses > ctx_hits * 0.1) {
-        bottleneck = "CONTEXT-LIMITED (TRT上下文瓶颈)";
-        recommendation = "Context pool exhausted frequently. Increase pool or reduce workers.";
+    } else if (ctx_misses > 0 && ctx_idle == 0 && infer_ratio < 0.98) {
+        bottleneck = "CONTEXT-WAIT (TRT上下文等待)";
+        recommendation = "Some batches waited for a free context; prefer idle-stream scheduling and keep contexts aligned with parallel infer.";
     } else {
         bottleneck = "BALANCED (均衡)";
         recommendation = "Pipeline is well balanced.";
@@ -1665,14 +1696,14 @@ void MainWindow::printPipelineStats()
         "╠══════════════════════════════════════════════════════════════╣\n"
         "║ GPU Memory:    %.0f / %.0f MiB (%.1f%%)                     \n"
         "║ Slot Pool:     Used %d / %d  (Peak: %d, Free: %d)          \n"
-        "║ DetQueue:      %zu / %zu items                              \n"
+        "║ SlotQueue:     %zu / %zu items                              \n"
         "║ FrameQueues:   %s                                           \n"
         "║ TRT Contexts:  %d idle (hits: %llu, misses: %llu, hit%%: %.1f%%)\n"
-        "║ Workers:       %d active, maxBatch=%d                       \n"
+        "║ Workers:       %d active, streams=%d, maxBatch=%d           \n"
         "╠══════════════════════════════════════════════════════════════╣\n"
         "║ Throughput (per second, %.0fs interval):                    \n"
         "║   Input:       %.1f fps                                     \n"
-        "║   DQ Push:     %.1f fps (dropped: %.1f/s)                   \n"
+        "║   SlotQ Push:  %.1f fps (dropped: %.1f/s)                   \n"
         "║   Inference:   %.1f fps (%.1f batches/s)                    \n"
         "║   Detections:  %.1f objects/s                               \n"
         "║   Display:     %.1f fps                                     \n"
@@ -1700,7 +1731,7 @@ void MainWindow::printPipelineStats()
         dq_size, dq_cap,
         fqInfo.toUtf8().constData(),
         ctx_idle, (unsigned long long)ctx_hits, (unsigned long long)ctx_misses, ctx_hit_pct,
-        m_workerCount, m_workerMaxBatch,
+        m_workerCount, m_inferenceStreams, m_workerMaxBatch,
         interval,
         decode_fps,
         push_fps, dropped_dq / interval,
@@ -1736,7 +1767,13 @@ void MainWindow::openAdvancedSettings()
         // 压力测试：启动时暂停所有通道 + 自动初始化检测管线
         connect(m_advancedDialog, &AdvancedSettingsDialog::loadTestStartRequested, this,
             [this](bool useRealDecode, int numChannels, int targetFps, int layoutMode) {
-            m_loadTestRealDecode = useRealDecode;
+                m_loadTestRealDecode = useRealDecode;
+            if (m_nvtxLoadTestRangeId != 0) {
+                nvtxRangeEnd(m_nvtxLoadTestRangeId);
+                m_nvtxLoadTestRangeId = 0;
+            }
+            // NVTX: start a named range for the load test so captures can be scoped
+                m_nvtxLoadTestRangeId = nvtxRangeStartA("LoadTest");
             m_loadTestChannels.clear();
             m_loadTestTargetFps = targetFps;
             m_loadTestPrevSettings.clear();
@@ -1812,6 +1849,11 @@ void MainWindow::openAdvancedSettings()
 
         // 压力测试：结束后恢复所有通道并释放多余显存
         connect(m_advancedDialog, &AdvancedSettingsDialog::loadTestStopRequested, this, [this]() {
+            // NVTX: end the load test range if it was started
+            if (m_nvtxLoadTestRangeId) {
+                nvtxRangeEnd(m_nvtxLoadTestRangeId);
+                m_nvtxLoadTestRangeId = 0;
+            }
             if (m_loadTestRealDecode) {
                 // 遍历 m_loadTestChannels 而非 PrevSettings，确保所有参与过压测的通道都被处理
                 // 之前使用的 m_loadTestPrevSettings 可能不包含那些压测前“未配置”的通道，导致它们无法被停止
@@ -1860,8 +1902,8 @@ void MainWindow::openAdvancedSettings()
                     it.value()->setSpeed(1.0f);
                 }
             }
-            // 收缩多余 TRT context 和 Slot，释放显存
-            TRTDetector::getInstance().shrinkContextPool(1);
+            // 收缩多余 TRT context 和 Slot，释放显存；保留当前配置的并行推理数量
+            TRTDetector::getInstance().shrinkContextPool(static_cast<size_t>(std::max(1, m_inferenceStreams)));
             MemoryManager::getInstance().shrinkToBase();
             logSystemMessage("Load test finished. Excess VRAM released.", 0);
         });
@@ -1870,8 +1912,9 @@ void MainWindow::openAdvancedSettings()
     AdvancedSettingsDialog::Settings cur;
     cur.baseSlots      = m_baseSlots;
     cur.workerCount    = m_workerCountSetting;
+    cur.inferenceStreams = m_inferenceStreams;
     cur.workerMaxBatch = m_workerMaxBatch;
-    cur.contextPoolSize = m_contextPoolSize;
+    cur.contextPoolSize = 1;
     cur.modelPath      = m_modelPath;
     cur.classesPath    = m_classesPath;
     cur.statsInterval  = m_pipelineStatsTimer ? m_pipelineStatsTimer->interval() / 1000 : 5;
@@ -1885,8 +1928,9 @@ void MainWindow::applySettings(const AdvancedSettingsDialog::Settings& s)
 {
     m_baseSlots        = s.baseSlots;
     m_workerCountSetting = s.workerCount;
+    m_inferenceStreams = s.inferenceStreams;
     m_workerMaxBatch   = s.workerMaxBatch;
-    m_contextPoolSize  = s.contextPoolSize;
+    m_contextPoolSize  = 1;
     m_modelPath        = s.modelPath;
 
     // 如果 classesPath 变更，清空已加载的类别名称以触发重新加载
@@ -1901,40 +1945,46 @@ void MainWindow::applySettings(const AdvancedSettingsDialog::Settings& s)
         m_pipelineStatsTimer->setInterval(s.statsInterval * 1000);
     }
 
-    // 如果模型已加载且用户手动设置了 context pool，立即调整
-    if (m_modelLoaded && m_contextPoolSize > 0) {
-        TRTDetector::getInstance().resizeContextPool(
-            static_cast<size_t>(m_contextPoolSize));
+    // context 池规模跟随 stream 参数，确保 stream 参数真实生效
+    if (m_modelLoaded) {
+        TRTDetector::getInstance().resizeContextPool(std::max(1, m_inferenceStreams));
     }
 
     // 检测运行中时热更新 Worker 数量
     if (m_detectionEnabled) {
+        int effectiveStreams = std::max(1, m_inferenceStreams);
+        TRTDetector::getInstance().resizeContextPool(static_cast<size_t>(effectiveStreams));
         if (m_memoryInited) {
-            MemoryManager::getInstance().setBaseSlots(m_baseSlots);
+            int effectiveBatch = std::min(m_workerMaxBatch, TRTDetector::getInstance().getMaxBatch());
+            MemoryManager::getInstance().setBaseSlots(recommendedSlotCount(effectiveBatch));
             int gridMode = ui->comboBox_layout->currentIndex() + 1;
             MemoryManager::getInstance().adjustSlotsForMode(gridMode);
         }
-        int desiredWorkers;
-        if (m_workerCountSetting > 0) {
-            desiredWorkers = m_workerCountSetting;
-        } else {
-            desiredWorkers = 1; // Auto
-        }
-        if (m_workerCount != desiredWorkers) {
-            logSystemMessage(QString("Hot-applying worker count: %1 → %2").arg(m_workerCount).arg(desiredWorkers), 0);
+        int desiredWorkers = 1;
+        const bool worker_changed = (m_workerCount != desiredWorkers);
+        if (worker_changed || !m_workers.empty()) {
+            logSystemMessage(QString("Hot-applying workers/streams: workers %1 -> %2, streams=%3")
+                .arg(m_workerCount).arg(desiredWorkers).arg(effectiveStreams), 0);
             for (auto &w : m_workers) w->stop();
             m_workers.clear();
             m_workerCount = desiredWorkers;
             for (int i = 0; i < m_workerCount; ++i) {
-                auto w = std::make_unique<Worker>(i, static_cast<size_t>(m_workerMaxBatch), std::chrono::milliseconds(50), desiredWorkers);
+                auto w = std::make_unique<Worker>(
+                    i,
+                    static_cast<size_t>(m_workerMaxBatch),
+                    std::chrono::milliseconds(5),
+                    desiredWorkers,
+                    effectiveStreams);
                 w->start();
                 m_workers.push_back(std::move(w));
             }
         }
     }
 
-    logSystemMessage(QString("Settings applied — slots=%1, workers=%2, batch=%3, ctxPool=%4, model=%5")
-        .arg(s.baseSlots).arg(s.workerCount).arg(s.workerMaxBatch).arg(s.contextPoolSize).arg(s.modelPath), 0);
+    int effectiveBatch = std::min(m_workerMaxBatch, TRTDetector::getInstance().getMaxBatch());
+    logSystemMessage(QString("Settings applied — slots=%1, workers=%2, streams=%3, batch=%4, ctxPool=%5, model=%6")
+        .arg(recommendedSlotCount(effectiveBatch)).arg(1).arg(s.inferenceStreams)
+        .arg(s.workerMaxBatch).arg(std::max(1, s.inferenceStreams)).arg(s.modelPath), 0);
 }
 
 void MainWindow::startChannel(int channel_id)
@@ -1968,8 +2018,9 @@ void MainWindow::startChannel(int channel_id)
     DisplayWorker* worker = m_displayManager->getWorker(channel_id);
     if (worker) {
         if (VideoWidget* v = findVideoWidget(channel_id)) {
-            v->setDataSource(&worker->current_ptr, &worker->current_w, 
-                            &worker->current_h, &worker->current_pitch);
+            v->setDataSource(&worker->current_ptr, &worker->current_w,
+                             &worker->current_h, &worker->current_pitch,
+                             &worker->current_format);
         }
     }
 
@@ -1993,15 +2044,15 @@ void MainWindow::startChannel(int channel_id)
     m_threads[channel_id] = thread;
 
     // 允许该通道进入检测队列
-    DetectionQueue::getInstance().enableChannel(channel_id);
+    SlotQueue::getInstance().enableChannel(channel_id);
 
     // 如果检测正在运行且是图片源，确保队列已就绪并记录诊断信息
     if (m_detectionEnabled && m_channelSettings[channel_id].sourceTypeIndex == 3) {
         fprintf(stderr, "[MainWindow] Image channel %d started with detection enabled. "
-                "DQ enabled=%d, channel_enabled=%d, workers=%zu\n",
+                "SlotQ enabled=%d, channel_enabled=%d, workers=%zu\n",
                 channel_id,
-                DetectionQueue::getInstance().isEnabled() ? 1 : 0,
-                DetectionQueue::getInstance().isChannelEnabled(channel_id) ? 1 : 0,
+                SlotQueue::getInstance().isEnabled() ? 1 : 0,
+                SlotQueue::getInstance().isChannelEnabled(channel_id) ? 1 : 0,
                 m_workers.size());
     }
 
@@ -2032,8 +2083,8 @@ void MainWindow::stopChannel(int channel_id)
     if (!m_decoders.contains(channel_id)) return;
 
     // 禁止该通道进入检测队列并清理队列中的残留
-    DetectionQueue::getInstance().disableChannel(channel_id);
-    DetectionQueue::getInstance().clearChannel(channel_id);
+    SlotQueue::getInstance().disableChannel(channel_id);
+    SlotQueue::getInstance().clearChannel(channel_id);
     
     // 先清除 VideoWidget 的显示，防止野指针
     if (VideoWidget* v = findVideoWidget(channel_id)) {

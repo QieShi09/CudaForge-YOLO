@@ -2690,6 +2690,18 @@
 			"value" : "1"
 		},
 		{
+			"name" : "NVTOOLSEXT_LIBRARY",
+			"properties" : 
+			[
+				{
+					"name" : "HELPSTRING",
+					"value" : "Path to a library."
+				}
+			],
+			"type" : "FILEPATH",
+			"value" : "NVTOOLSEXT_LIBRARY-NOTFOUND"
+		},
+		{
 			"name" : "OPENGL_EGL_INCLUDE_DIR",
 			"properties" : 
 			[

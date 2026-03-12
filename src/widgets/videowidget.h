@@ -13,6 +13,10 @@
 #include <atomic>
 #include <QPushButton>
 
+extern "C" {
+#include <libavutil/pixfmt.h>
+}
+
 class QTimer;
 class VideoWidget : public QOpenGLWidget, protected QOpenGLFunctions
 {
@@ -31,10 +35,11 @@ public:
     void setText(const QString &text);
     
     // 更新 CUDA 纹理数据
-    void updateTexture(void* device_ptr, int width, int height, int pitch);
+    void updateTexture(void* device_ptr, int width, int height, int pitch, int format = AV_PIX_FMT_RGBA);
 
     // 设置共享的数据源指针 (原子操作)
-    void setDataSource(std::atomic<void*>* ptr, std::atomic<int>* w, std::atomic<int>* h, std::atomic<int>* p);
+    void setDataSource(std::atomic<void*>* ptr, std::atomic<int>* w, std::atomic<int>* h,
+                       std::atomic<int>* p, std::atomic<int>* f);
 
     // 清除显示内容
     void clear();
@@ -76,6 +81,8 @@ private:
 
     // OpenGL 资源
     GLuint m_textureId = 0;
+    GLuint m_textureYId = 0;
+    GLuint m_textureUVId = 0;
     int m_texWidth = 0;
     int m_texHeight = 0;
     int m_allocatedTexWidth = 0;  // 已分配纹理的宽度
@@ -83,19 +90,26 @@ private:
 
     // Shader program for modern OpenGL rendering
     QOpenGLShaderProgram *m_program = nullptr;
-    int m_vertexAttr;
-    int m_texCoordAttr;
+    QOpenGLShaderProgram *m_programNv12 = nullptr;
+    int m_vertexAttr = -1;
+    int m_texCoordAttr = -1;
+    int m_vertexAttrNv12 = -1;
+    int m_texCoordAttrNv12 = -1;
     
     // CUDA 互操作资源
     cudaGraphicsResource* m_cudaResource = nullptr;
+    cudaGraphicsResource* m_cudaResourceY = nullptr;
+    cudaGraphicsResource* m_cudaResourceUV = nullptr;
     void* m_currentCudaPtr = nullptr; // 暂存传入的 CUDA 指针
     int m_currentPitch = 0;
+    int m_currentFormat = AV_PIX_FMT_NONE;
 
     // 数据源指针 (来自 DisplayWorker)
     std::atomic<void*>* m_sharedPtr = nullptr;
     std::atomic<int>* m_sharedW = nullptr;
     std::atomic<int>* m_sharedH = nullptr;
     std::atomic<int>* m_sharedPitch = nullptr;
+    std::atomic<int>* m_sharedFormat = nullptr;
     QTimer* m_timer = nullptr; // 每个实例独立的定时器
     QPushButton* m_closeBtn = nullptr;  // 关闭按钮
     QPushButton* m_replayBtn = nullptr; // 重播按钮（网格模式视频源）

@@ -8,6 +8,7 @@
 #include <QTextStream>
 #include <cstdio>
 #include <cuda_runtime.h>
+#include <libavutil/pixfmt.h>
 
 // 静态成员：类别名称文件路径
 QString VideoWidget::s_classesFilePath = "src/engines/class.txt";
@@ -56,8 +57,13 @@ VideoWidget::~VideoWidget()
 {
     makeCurrent();
     if (m_cudaResource) cudaGraphicsUnregisterResource(m_cudaResource);
+    if (m_cudaResourceY) cudaGraphicsUnregisterResource(m_cudaResourceY);
+    if (m_cudaResourceUV) cudaGraphicsUnregisterResource(m_cudaResourceUV);
     if (m_textureId) glDeleteTextures(1, &m_textureId);
+    if (m_textureYId) glDeleteTextures(1, &m_textureYId);
+    if (m_textureUVId) glDeleteTextures(1, &m_textureUVId);
     delete m_program;
+    delete m_programNv12;
     doneCurrent();
 }
 
@@ -74,18 +80,20 @@ void VideoWidget::setText(const QString &text)
     update();
 }
 
-void VideoWidget::updateTexture(void* device_ptr, int width, int height, int pitch)
+void VideoWidget::updateTexture(void* device_ptr, int width, int height, int pitch, int format)
 {
     // 暂存数据，等待 paintGL 时在 OpenGL 上下文中处理
     m_currentCudaPtr = device_ptr;
     m_texWidth = width;
     m_texHeight = height;
     m_currentPitch = pitch;
+    m_currentFormat = format;
     m_text.clear(); // 收到视频帧，必须清除 "WAITING" 文字
     update(); // 触发重绘
 }
 
-void VideoWidget::setDataSource(std::atomic<void*>* ptr, std::atomic<int>* w, std::atomic<int>* h, std::atomic<int>* p)
+void VideoWidget::setDataSource(std::atomic<void*>* ptr, std::atomic<int>* w, std::atomic<int>* h,
+                                std::atomic<int>* p, std::atomic<int>* f)
 {
     // 如果源没变（例如 Grid 切换时重新绑定），直接返回，避免闪烁
     if (m_sharedPtr == ptr && ptr != nullptr) return;
@@ -98,9 +106,25 @@ void VideoWidget::setDataSource(std::atomic<void*>* ptr, std::atomic<int>* w, st
             cudaGraphicsUnregisterResource(m_cudaResource);
             m_cudaResource = nullptr;
         }
+        if (m_cudaResourceY) {
+            cudaGraphicsUnregisterResource(m_cudaResourceY);
+            m_cudaResourceY = nullptr;
+        }
+        if (m_cudaResourceUV) {
+            cudaGraphicsUnregisterResource(m_cudaResourceUV);
+            m_cudaResourceUV = nullptr;
+        }
         if (m_textureId) {
             glDeleteTextures(1, &m_textureId);
             m_textureId = 0;
+        }
+        if (m_textureYId) {
+            glDeleteTextures(1, &m_textureYId);
+            m_textureYId = 0;
+        }
+        if (m_textureUVId) {
+            glDeleteTextures(1, &m_textureUVId);
+            m_textureUVId = 0;
         }
         doneCurrent();
     }
@@ -113,6 +137,7 @@ void VideoWidget::setDataSource(std::atomic<void*>* ptr, std::atomic<int>* w, st
     m_sharedW = w;
     m_sharedH = h;
     m_sharedPitch = p;
+    m_sharedFormat = f;
     
     m_text = "LOADING..."; // 切换时显示加载中
     m_closeBtn->show();    // 显示交互按钮
@@ -141,9 +166,25 @@ void VideoWidget::clear()
             cudaGraphicsUnregisterResource(m_cudaResource);
             m_cudaResource = nullptr;
         }
+        if (m_cudaResourceY) {
+            cudaGraphicsUnregisterResource(m_cudaResourceY);
+            m_cudaResourceY = nullptr;
+        }
+        if (m_cudaResourceUV) {
+            cudaGraphicsUnregisterResource(m_cudaResourceUV);
+            m_cudaResourceUV = nullptr;
+        }
         if (m_textureId) {
             glDeleteTextures(1, &m_textureId);
             m_textureId = 0;
+        }
+        if (m_textureYId) {
+            glDeleteTextures(1, &m_textureYId);
+            m_textureYId = 0;
+        }
+        if (m_textureUVId) {
+            glDeleteTextures(1, &m_textureUVId);
+            m_textureUVId = 0;
         }
         doneCurrent();
     }
@@ -153,7 +194,9 @@ void VideoWidget::clear()
     m_sharedW = nullptr;
     m_sharedH = nullptr;
     m_sharedPitch = nullptr;
+    m_sharedFormat = nullptr;
     m_currentCudaPtr = nullptr; 
+    m_currentFormat = AV_PIX_FMT_NONE;
     
     // 关键：重置已分配尺寸，强制下次打开时重建 OpenGL 资源
     m_allocatedTexWidth = 0;
@@ -209,6 +252,29 @@ void VideoWidget::initializeGL()
     m_program->link();
     m_vertexAttr = m_program->attributeLocation("vertex");
     m_texCoordAttr = m_program->attributeLocation("texCoord");
+
+    // NV12 shader program
+    m_programNv12 = new QOpenGLShaderProgram(this);
+    m_programNv12->addShaderFromSourceCode(QOpenGLShader::Vertex, vsrc);
+    const char *fsrcNv12 =
+        "uniform sampler2D texY;\n"
+        "uniform sampler2D texUV;\n"
+        "varying vec2 texc;\n"
+        "void main(void)\n"
+        "{\n"
+        "    float y = texture2D(texY, texc).r;\n"
+        "    vec2 uv = texture2D(texUV, texc).rg;\n"
+        "    float u = uv.x - 0.5;\n"
+        "    float v = uv.y - 0.5;\n"
+        "    float r = y + 1.402 * v;\n"
+        "    float g = y - 0.344136 * u - 0.714136 * v;\n"
+        "    float b = y + 1.772 * u;\n"
+        "    gl_FragColor = vec4(r, g, b, 1.0);\n"
+        "}\n";
+    m_programNv12->addShaderFromSourceCode(QOpenGLShader::Fragment, fsrcNv12);
+    m_programNv12->link();
+    m_vertexAttrNv12 = m_programNv12->attributeLocation("vertex");
+    m_texCoordAttrNv12 = m_programNv12->attributeLocation("texCoord");
 }
 
 void VideoWidget::resizeEvent(QResizeEvent *event)
@@ -296,6 +362,7 @@ void VideoWidget::paintGL()
         m_texWidth = m_sharedW->load(std::memory_order_relaxed);
         m_texHeight = m_sharedH->load(std::memory_order_relaxed);
         m_currentPitch = m_sharedPitch->load(std::memory_order_relaxed);
+        m_currentFormat = m_sharedFormat ? m_sharedFormat->load(std::memory_order_relaxed) : AV_PIX_FMT_RGBA;
         
         // 只要拿到了有效的指针且尺寸正常，就立即清除 LOADING 或 WAITING
         if (m_texWidth > 0 && m_texHeight > 0) {
@@ -310,70 +377,115 @@ void VideoWidget::paintGL()
 
     // 1. 处理 CUDA -> OpenGL 纹理拷贝
     if (m_currentCudaPtr && m_texWidth > 0 && m_texHeight > 0) {
-        // 仅当纹理未创建，或视频分辨率发生变化时，才重建纹理
-        if (m_textureId == 0 || m_texWidth != m_allocatedTexWidth || m_texHeight != m_allocatedTexHeight) {
-            // 如果已有资源，先释放
-            if (m_cudaResource) cudaGraphicsUnregisterResource(m_cudaResource);
-            if (m_textureId) glDeleteTextures(1, &m_textureId);
-
-            // 创建新纹理
-            glGenTextures(1, &m_textureId);
-            glBindTexture(GL_TEXTURE_2D, m_textureId);
-            // 设置纹理参数
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-            // 分配显存 (RGBA)
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, m_texWidth, m_texHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-            glBindTexture(GL_TEXTURE_2D, 0);
-
-            // 更新已分配的纹理尺寸记录
-            m_allocatedTexWidth = m_texWidth;
-            m_allocatedTexHeight = m_texHeight;
-
-            // 将新纹理注册到 CUDA
-            cudaError_t regErr = cudaGraphicsGLRegisterImage(&m_cudaResource, m_textureId, GL_TEXTURE_2D, cudaGraphicsRegisterFlagsWriteDiscard);
-            if (regErr != cudaSuccess) {
-                fprintf(stderr, "[VideoWidget ch=%d] cudaGraphicsGLRegisterImage failed: %s (tex=%u %dx%d)\n",
-                        m_channelId, cudaGetErrorString(regErr), m_textureId, m_texWidth, m_texHeight);
-                m_cudaResource = nullptr;
+        if (m_currentFormat == AV_PIX_FMT_NV12) {
+            if (m_textureId) {
+                if (m_cudaResource) { cudaGraphicsUnregisterResource(m_cudaResource); m_cudaResource = nullptr; }
+                glDeleteTextures(1, &m_textureId);
+                m_textureId = 0;
             }
-        }
+            if (m_textureYId == 0 || m_textureUVId == 0 || m_texWidth != m_allocatedTexWidth || m_texHeight != m_allocatedTexHeight) {
+                if (m_cudaResourceY) { cudaGraphicsUnregisterResource(m_cudaResourceY); m_cudaResourceY = nullptr; }
+                if (m_cudaResourceUV) { cudaGraphicsUnregisterResource(m_cudaResourceUV); m_cudaResourceUV = nullptr; }
+                if (m_textureYId) { glDeleteTextures(1, &m_textureYId); m_textureYId = 0; }
+                if (m_textureUVId) { glDeleteTextures(1, &m_textureUVId); m_textureUVId = 0; }
 
-        if (!m_cudaResource) {
-            // 注册失败，跳过 CUDA 拷贝
-        } else {
-        // 映射资源
-        cudaError_t mapErr = cudaGraphicsMapResources(1, &m_cudaResource, 0);
-        if (mapErr != cudaSuccess) {
-            fprintf(stderr, "[VideoWidget ch=%d] cudaGraphicsMapResources failed: %s (ptr=%p)\n",
-                    m_channelId, cudaGetErrorString(mapErr), (void*)m_currentCudaPtr);
-        } else {
-            cudaArray* textureArray;
-            cudaGraphicsSubResourceGetMappedArray(&textureArray, m_cudaResource, 0, 0);
+                glGenTextures(1, &m_textureYId);
+                glBindTexture(GL_TEXTURE_2D, m_textureYId);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, m_texWidth, m_texHeight, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
 
-            // 执行拷贝 (Device -> Array)
-            cudaError_t cpyErr = cudaMemcpy2DToArray(textureArray, 0, 0, m_currentCudaPtr, m_currentPitch, m_texWidth * 4, m_texHeight, cudaMemcpyDeviceToDevice);
-            if (cpyErr != cudaSuccess) {
-                fprintf(stderr, "[VideoWidget ch=%d] cudaMemcpy2DToArray failed: %s (ptr=%p pitch=%d %dx%d)\n",
-                        m_channelId, cudaGetErrorString(cpyErr),
-                        (void*)m_currentCudaPtr, m_currentPitch, m_texWidth, m_texHeight);
+                glGenTextures(1, &m_textureUVId);
+                glBindTexture(GL_TEXTURE_2D, m_textureUVId);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RG8, m_texWidth / 2, m_texHeight / 2, 0, GL_RG, GL_UNSIGNED_BYTE, nullptr);
+                glBindTexture(GL_TEXTURE_2D, 0);
+
+                m_allocatedTexWidth = m_texWidth;
+                m_allocatedTexHeight = m_texHeight;
+
+                cudaError_t regY = cudaGraphicsGLRegisterImage(&m_cudaResourceY, m_textureYId, GL_TEXTURE_2D, cudaGraphicsRegisterFlagsWriteDiscard);
+                cudaError_t regUV = cudaGraphicsGLRegisterImage(&m_cudaResourceUV, m_textureUVId, GL_TEXTURE_2D, cudaGraphicsRegisterFlagsWriteDiscard);
+                if (regY != cudaSuccess || regUV != cudaSuccess) {
+                    fprintf(stderr, "[VideoWidget ch=%d] cudaGraphicsGLRegisterImage(NV12) failed: Y=%s UV=%s\n",
+                            m_channelId, cudaGetErrorString(regY), cudaGetErrorString(regUV));
+                    if (m_cudaResourceY) { cudaGraphicsUnregisterResource(m_cudaResourceY); m_cudaResourceY = nullptr; }
+                    if (m_cudaResourceUV) { cudaGraphicsUnregisterResource(m_cudaResourceUV); m_cudaResourceUV = nullptr; }
+                }
             }
 
-            // 解除映射
-            cudaGraphicsUnmapResources(1, &m_cudaResource, 0);
+            if (m_cudaResourceY && m_cudaResourceUV) {
+                cudaGraphicsResource* resources[2] = {m_cudaResourceY, m_cudaResourceUV};
+                cudaError_t mapErr = cudaGraphicsMapResources(2, resources, 0);
+                if (mapErr == cudaSuccess) {
+                    cudaArray* arrY = nullptr;
+                    cudaArray* arrUV = nullptr;
+                    cudaGraphicsSubResourceGetMappedArray(&arrY, m_cudaResourceY, 0, 0);
+                    cudaGraphicsSubResourceGetMappedArray(&arrUV, m_cudaResourceUV, 0, 0);
+
+                    const uint8_t* base = reinterpret_cast<const uint8_t*>(m_currentCudaPtr);
+                    const uint8_t* srcY = base;
+                    const uint8_t* srcUV = base + static_cast<size_t>(m_texWidth) * m_texHeight;
+
+                    cudaMemcpy2DToArray(arrY, 0, 0, srcY, m_currentPitch, m_texWidth, m_texHeight, cudaMemcpyDeviceToDevice);
+                    cudaMemcpy2DToArray(arrUV, 0, 0, srcUV, m_texWidth, m_texWidth, m_texHeight / 2, cudaMemcpyDeviceToDevice);
+
+                    cudaGraphicsUnmapResources(2, resources, 0);
+                }
+            }
+        } else {
+            if (m_textureYId || m_textureUVId) {
+                if (m_cudaResourceY) { cudaGraphicsUnregisterResource(m_cudaResourceY); m_cudaResourceY = nullptr; }
+                if (m_cudaResourceUV) { cudaGraphicsUnregisterResource(m_cudaResourceUV); m_cudaResourceUV = nullptr; }
+                if (m_textureYId) { glDeleteTextures(1, &m_textureYId); m_textureYId = 0; }
+                if (m_textureUVId) { glDeleteTextures(1, &m_textureUVId); m_textureUVId = 0; }
+            }
+
+            if (m_textureId == 0 || m_texWidth != m_allocatedTexWidth || m_texHeight != m_allocatedTexHeight) {
+                if (m_cudaResource) cudaGraphicsUnregisterResource(m_cudaResource);
+                if (m_textureId) glDeleteTextures(1, &m_textureId);
+
+                glGenTextures(1, &m_textureId);
+                glBindTexture(GL_TEXTURE_2D, m_textureId);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, m_texWidth, m_texHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+                glBindTexture(GL_TEXTURE_2D, 0);
+
+                m_allocatedTexWidth = m_texWidth;
+                m_allocatedTexHeight = m_texHeight;
+
+                cudaError_t regErr = cudaGraphicsGLRegisterImage(&m_cudaResource, m_textureId, GL_TEXTURE_2D, cudaGraphicsRegisterFlagsWriteDiscard);
+                if (regErr != cudaSuccess) {
+                    fprintf(stderr, "[VideoWidget ch=%d] cudaGraphicsGLRegisterImage failed: %s (tex=%u %dx%d)\n",
+                            m_channelId, cudaGetErrorString(regErr), m_textureId, m_texWidth, m_texHeight);
+                    m_cudaResource = nullptr;
+                }
+            }
+
+            if (m_cudaResource) {
+                cudaError_t mapErr = cudaGraphicsMapResources(1, &m_cudaResource, 0);
+                if (mapErr == cudaSuccess) {
+                    cudaArray* textureArray;
+                    cudaGraphicsSubResourceGetMappedArray(&textureArray, m_cudaResource, 0, 0);
+                    cudaMemcpy2DToArray(textureArray, 0, 0, m_currentCudaPtr, m_currentPitch,
+                                        m_texWidth * 4, m_texHeight, cudaMemcpyDeviceToDevice);
+                    cudaGraphicsUnmapResources(1, &m_cudaResource, 0);
+                }
+            }
         }
-        } // end m_cudaResource check
     }
     
     // 2. 使用原生 OpenGL 绘制纹理背景
-    if (m_textureId != 0) {
-        glBindTexture(GL_TEXTURE_2D, m_textureId);
-
-        // 使用 Shader Program 绘制
-        m_program->bind();
+    if (m_currentFormat == AV_PIX_FMT_NV12 && m_textureYId != 0 && m_textureUVId != 0) {
+        m_programNv12->bind();
 
         // 定义顶点和纹理坐标
         GLfloat vertices[] = {
@@ -382,6 +494,40 @@ void VideoWidget::paintGL()
         
         // 默认纹理坐标 (0,0 是左下)。
         // 如果发现画面是倒的（头朝下），就把这里的 0.0 和 1.0 对调。
+        GLfloat texCoords[] = {
+            0.0f, 1.0f,   1.0f, 1.0f,   1.0f, 0.0f,   0.0f, 0.0f
+        };
+
+        glVertexAttribPointer(m_vertexAttrNv12, 2, GL_FLOAT, GL_FALSE, 0, vertices);
+        glVertexAttribPointer(m_texCoordAttrNv12, 2, GL_FLOAT, GL_FALSE, 0, texCoords);
+
+        glEnableVertexAttribArray(m_vertexAttrNv12);
+        glEnableVertexAttribArray(m_texCoordAttrNv12);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, m_textureYId);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, m_textureUVId);
+        m_programNv12->setUniformValue("texY", 0);
+        m_programNv12->setUniformValue("texUV", 1);
+
+        glDrawArrays(GL_QUADS, 0, 4);
+
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE0);
+
+        glDisableVertexAttribArray(m_vertexAttrNv12);
+        glDisableVertexAttribArray(m_texCoordAttrNv12);
+
+        m_programNv12->release();
+    } else if (m_textureId != 0) {
+        glBindTexture(GL_TEXTURE_2D, m_textureId);
+        m_program->bind();
+
+        GLfloat vertices[] = {
+            -1.0f, -1.0f,   1.0f, -1.0f,   1.0f,  1.0f,  -1.0f,  1.0f
+        };
+
         GLfloat texCoords[] = {
             0.0f, 1.0f,   1.0f, 1.0f,   1.0f, 0.0f,   0.0f, 0.0f
         };

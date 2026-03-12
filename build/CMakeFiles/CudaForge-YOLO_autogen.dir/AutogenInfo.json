@@ -430,12 +430,6 @@
 			null
 		],
 		[
-			"/home/zzx/code/Qt/CudaForge-YOLO/src/core/DetectionQueue.hpp",
-			"MU",
-			"PRMOGMWJPH/moc_DetectionQueue.cpp",
-			null
-		],
-		[
 			"/home/zzx/code/Qt/CudaForge-YOLO/src/core/DetectionResults.hpp",
 			"MU",
 			"PRMOGMWJPH/moc_DetectionResults.cpp",
@@ -454,6 +448,12 @@
 			null
 		],
 		[
+			"/home/zzx/code/Qt/CudaForge-YOLO/src/core/NvtxUtils.hpp",
+			"MU",
+			"PRMOGMWJPH/moc_NvtxUtils.cpp",
+			null
+		],
+		[
 			"/home/zzx/code/Qt/CudaForge-YOLO/src/core/PacketQueue.hpp",
 			"MU",
 			"PRMOGMWJPH/moc_PacketQueue.cpp",
@@ -469,6 +469,12 @@
 			"/home/zzx/code/Qt/CudaForge-YOLO/src/core/Slot.hpp",
 			"MU",
 			"PRMOGMWJPH/moc_Slot.cpp",
+			null
+		],
+		[
+			"/home/zzx/code/Qt/CudaForge-YOLO/src/core/SlotQueue.hpp",
+			"MU",
+			"PRMOGMWJPH/moc_SlotQueue.cpp",
 			null
 		],
 		[

@@ -348,6 +348,9 @@ CudaForge-YOLO_IS_TOP_LEVEL:STATIC=ON
 //Value Computed by CMake
 CudaForge-YOLO_SOURCE_DIR:STATIC=/home/zzx/code/Qt/CudaForge-YOLO
 
+//Path to a library.
+NVTOOLSEXT_LIBRARY:FILEPATH=NVTOOLSEXT_LIBRARY-NOTFOUND
+
 //Path to a file.
 OPENGL_EGL_INCLUDE_DIR:PATH=/usr/include
 

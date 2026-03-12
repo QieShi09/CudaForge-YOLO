@@ -1,6 +1,7 @@
 #include "TRTDetector.hpp"
 #include "Logger.hpp"
 #include "../core/PipelineStats.hpp"
+#include "../core/NvtxUtils.hpp"
 #include <fstream>
 #include <algorithm>
 #include <chrono>
@@ -11,8 +12,59 @@ TRTDetector::~TRTDetector() {
     shutdown();
 }
 
+void TRTDetector::ensureCallbackWorker() {
+    std::lock_guard<std::mutex> lk(callback_mutex_);
+    if (callback_worker_running_) return;
+    callback_worker_running_ = true;
+    callback_worker_ = std::thread(&TRTDetector::callbackWorkerLoop, this);
+}
+
+void TRTDetector::stopCallbackWorker() {
+    {
+        std::lock_guard<std::mutex> lk(callback_mutex_);
+        if (!callback_worker_running_) return;
+        callback_worker_running_ = false;
+    }
+    callback_cv_.notify_all();
+    if (callback_worker_.joinable()) callback_worker_.join();
+
+    std::lock_guard<std::mutex> lk(callback_mutex_);
+    callback_queue_.clear();
+}
+
+void TRTDetector::callbackWorkerLoop() {
+    while (true) {
+        CallbackTask task;
+        {
+            std::unique_lock<std::mutex> lk(callback_mutex_);
+            callback_cv_.wait(lk, [this] {
+                return !callback_worker_running_ || !callback_queue_.empty();
+            });
+            if (!callback_worker_running_ && callback_queue_.empty()) {
+                break;
+            }
+            task = std::move(callback_queue_.front());
+            callback_queue_.pop_front();
+        }
+
+        bool is_shutting_down = shutting_down_.load(std::memory_order_acquire);
+        releaseContext(task.ctx);
+        if (task.cb && !is_shutting_down) {
+            task.cb(task.slot, true);
+        } else if (task.cb) {
+            task.cb(task.slot, false);
+        }
+
+        int prev = inflight_callbacks_.fetch_sub(1, std::memory_order_acq_rel);
+        if (prev <= 1) {
+            inflight_cv_.notify_all();
+        }
+    }
+}
+
 void TRTDetector::shutdown() {
     if (shutting_down_.exchange(true)) return;
+    ctx_cv_.notify_all();
 
     // 等待所有 in-flight 异步回调完成，防止 use-after-free
     {
@@ -29,6 +81,8 @@ void TRTDetector::shutdown() {
             }
         }
     }
+
+    stopCallbackWorker();
 
     // 先释放所有context
     {
@@ -50,7 +104,10 @@ void TRTDetector::shutdown() {
 }
 
 bool TRTDetector::load(const std::string& model_path) {
-    int batch_limit = 16;
+    shutting_down_.store(false, std::memory_order_release);
+    ensureCallbackWorker();
+
+    int batch_limit = 32;
     if (const char* env_batch = std::getenv("CUDAFORGE_MAX_DETECT_BATCH")) {
         int parsed = std::atoi(env_batch);
         if (parsed > 0) batch_limit = std::clamp(parsed, 1, 256);
@@ -162,55 +219,38 @@ bool TRTDetector::load(const std::string& model_path) {
         dynamic_shape_supported_ = true; // 保守假设
     }
 
-    // 读取 context 池硬上限（默认 2，可通过环境变量覆盖）
-    {
-        context_pool_limit_ = 2;
-        if (const char* env_limit = std::getenv("CUDAFORGE_MAX_CONTEXTS")) {
-            int parsed = std::atoi(env_limit);
-            if (parsed > 0) context_pool_limit_ = static_cast<size_t>(parsed);
+    // 并行安全策略：允许多 context（每个 in-flight 推理独占一个 context），
+    // 避免“同一 context 并发 enqueue”导致的 binding/shape 状态污染。
+    context_pool_limit_ = 32;
+    if (const char* env_ctx = std::getenv("CUDAFORGE_MAX_CONTEXTS")) {
+        int parsed = std::atoi(env_ctx);
+        if (parsed > 0) {
+            context_pool_limit_ = static_cast<size_t>(std::clamp(parsed, 1, 64));
         }
     }
 
-    // 初始化 context 池（按 GPU 可用显存动态创建，每个 context 约占 400-500 MiB）
-    // 策略：少 Worker + 大 batch，因此只需 1-2 个 context（1 活跃 + 1 备用）
     size_t pool_size = 0;
-    const size_t RESERVED_MiB = 2048; // 为解码器 + Slot + 系统预留 2 GiB
-    {
-        size_t free_bytes = 0, total_bytes = 0;
-        cudaMemGetInfo(&free_bytes, &total_bytes);
-        size_t free_mib = free_bytes / (1024 * 1024);
-        size_t available_for_ctx = (free_mib > RESERVED_MiB) ? (free_mib - RESERVED_MiB) : 0;
-        // 估算每个 context 大小为 500 MiB（保守值）
-        size_t max_by_mem = available_for_ctx / 500;
-        pool_size = std::max(static_cast<size_t>(1), std::min(max_by_mem, context_pool_limit_));
-        std::cout << "[TRTDetector] GPU free: " << free_mib << " MiB, reserved: " 
-                  << RESERVED_MiB << " MiB, max contexts by memory: " << max_by_mem << std::endl;
-    }
-    for (size_t i = 0; i < pool_size; ++i) {
-        // 每创建一个 context 后检查剩余显存
-        auto ctx = createContext();
-        if (ctx) {
-            std::lock_guard<std::mutex> lk(ctx_mutex_);
-            context_pool_.push_back(ctx);
-        }
-        size_t free_after = 0, total_after = 0;
-        cudaMemGetInfo(&free_after, &total_after);
-        size_t free_mib_after = free_after / (1024 * 1024);
-        if (free_mib_after < RESERVED_MiB) {
-            std::cout << "[TRTDetector] Stopping at " << (i+1) << " contexts (free=" 
-                      << free_mib_after << " MiB < reserved=" << RESERVED_MiB << " MiB)" << std::endl;
-            break;
-        }
-    }
     {
         std::lock_guard<std::mutex> lk(ctx_mutex_);
+        while (!context_pool_.empty()) {
+            auto* ctx = context_pool_.front();
+            context_pool_.pop_front();
+            if (ctx) {
+                delete ctx;
+                ctx_destroyed_.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+        auto* ctx = createContext();
+        if (ctx) {
+            context_pool_.push_back(ctx);
+        }
         pool_size = context_pool_.size();
     }
     PipelineStats::getInstance().ctx_pool_size.store(static_cast<int>(pool_size), std::memory_order_relaxed);
     std::cout << "[TRTDetector] Context pool size: " << pool_size << std::endl;
     std::cout << "[TRTDetector] Context pool hard limit: " << context_pool_limit_ << std::endl;
     std::cout << "[TRTDetector] Context created: " << ctx_created_.load() << std::endl;
-    return true;
+    return pool_size > 0;
 }
 
 nvinfer1::IExecutionContext* TRTDetector::createContext() {
@@ -221,23 +261,27 @@ nvinfer1::IExecutionContext* TRTDetector::createContext() {
 }
 
 nvinfer1::IExecutionContext* TRTDetector::acquireContext() {
-    std::lock_guard<std::mutex> lk(ctx_mutex_);
-    if (!context_pool_.empty()) {
-        auto ctx = context_pool_.front();
-        context_pool_.pop_front();
-        PipelineStats::getInstance().ctx_pool_hits.fetch_add(1, std::memory_order_relaxed);
-        PipelineStats::getInstance().ctx_pool_size.store(static_cast<int>(context_pool_.size()), std::memory_order_relaxed);
-        return ctx;
+    std::unique_lock<std::mutex> lk(ctx_mutex_);
+    bool counted_wait_miss = false;
+    while (true) {
+        if (shutting_down_.load(std::memory_order_acquire) || !engine_) {
+            return nullptr;
+        }
+        if (!context_pool_.empty()) {
+            auto* ctx = context_pool_.front();
+            context_pool_.pop_front();
+            PipelineStats::getInstance().ctx_pool_hits.fetch_add(1, std::memory_order_relaxed);
+            PipelineStats::getInstance().ctx_pool_size.store(static_cast<int>(context_pool_.size()), std::memory_order_relaxed);
+            return ctx;
+        }
+        if (!counted_wait_miss) {
+            PipelineStats::getInstance().ctx_pool_misses.fetch_add(1, std::memory_order_relaxed);
+            counted_wait_miss = true;
+        }
+        ctx_cv_.wait_for(lk, std::chrono::milliseconds(1), [this] {
+            return shutting_down_.load(std::memory_order_acquire) || !context_pool_.empty() || !engine_;
+        });
     }
-    // 池空时尝试创建新的 context
-    PipelineStats::getInstance().ctx_pool_misses.fetch_add(1, std::memory_order_relaxed);
-    const int created = ctx_created_.load(std::memory_order_relaxed);
-    const int destroyed = ctx_destroyed_.load(std::memory_order_relaxed);
-    const int alive = std::max(0, created - destroyed);
-    if (static_cast<size_t>(alive) >= context_pool_limit_) {
-        return nullptr;
-    }
-    return createContext();
 }
 
 void TRTDetector::releaseContext(nvinfer1::IExecutionContext* ctx) {
@@ -251,13 +295,13 @@ void TRTDetector::releaseContext(nvinfer1::IExecutionContext* ctx) {
         context_pool_.push_back(ctx);
         PipelineStats::getInstance().ctx_pool_size.store(static_cast<int>(context_pool_.size()), std::memory_order_relaxed);
     }
+    ctx_cv_.notify_one();
 }
 
 void TRTDetector::shrinkContextPool(size_t keep) {
     std::lock_guard<std::mutex> lk(ctx_mutex_);
-    if (context_pool_.size() <= keep) return;
     while (context_pool_.size() > keep) {
-        auto ctx = context_pool_.front();
+        auto* ctx = context_pool_.front();
         context_pool_.pop_front();
         if (ctx) {
             delete ctx;
@@ -265,44 +309,27 @@ void TRTDetector::shrinkContextPool(size_t keep) {
         }
     }
     PipelineStats::getInstance().ctx_pool_size.store(static_cast<int>(context_pool_.size()), std::memory_order_relaxed);
-    std::cout << "[TRTDetector] Shrunk context pool to " << context_pool_.size() << std::endl;
 }
 
 void TRTDetector::resizeContextPool(size_t target) {
-    if (target == 0) return; // 0 = 自动，不调整
+    if (target == 0) return;
     target = std::min(target, context_pool_limit_);
     std::lock_guard<std::mutex> lk(ctx_mutex_);
-    // 缩减
     while (context_pool_.size() > target) {
-        auto ctx = context_pool_.front();
+        auto* ctx = context_pool_.front();
         context_pool_.pop_front();
         if (ctx) {
             delete ctx;
             ctx_destroyed_.fetch_add(1, std::memory_order_relaxed);
         }
     }
-    // 扩充
     while (context_pool_.size() < target) {
-        auto ctx = engine_ ? engine_->createExecutionContext() : nullptr;
-        if (!ctx) {
-            std::cerr << "[TRTDetector] Failed to create context for pool expansion" << std::endl;
-            break;
-        }
+        auto* ctx = engine_ ? engine_->createExecutionContext() : nullptr;
+        if (!ctx) break;
         ctx_created_.fetch_add(1, std::memory_order_relaxed);
         context_pool_.push_back(ctx);
-        // 检查显存
-        size_t free_bytes = 0, total_bytes = 0;
-        cudaMemGetInfo(&free_bytes, &total_bytes);
-        size_t free_mib = free_bytes / (1024 * 1024);
-        if (free_mib < 1024) { // 剩余不足 1 GiB 时停止扩充
-            std::cout << "[TRTDetector] Stopped pool expansion at " << context_pool_.size()
-                      << " (free=" << free_mib << " MiB)" << std::endl;
-            break;
-        }
     }
     PipelineStats::getInstance().ctx_pool_size.store(static_cast<int>(context_pool_.size()), std::memory_order_relaxed);
-    std::cout << "[TRTDetector] Resized context pool to " << context_pool_.size()
-              << " (target=" << target << ", hard_limit=" << context_pool_limit_ << ")" << std::endl;
 }
 
 bool TRTDetector::asyncInfer(Slot* slot, cudaStream_t stream, std::function<void(Slot*, bool)> cb,
@@ -311,14 +338,12 @@ bool TRTDetector::asyncInfer(Slot* slot, cudaStream_t stream, std::function<void
 
     nvinfer1::IExecutionContext* ctx = acquireContext();
     if (!ctx) {
-        // 不调用 cb：由调用方 (Worker !ok 分支) 负责释放帧与 Slot
         return false;
     }
 
     bool launched = inference(slot, ctx, stream);
     if (!launched) {
         releaseContext(ctx);
-        // 不调用 cb：由调用方 (Worker !ok 分支) 负责释放帧与 Slot
         return false;
     }
 
@@ -326,39 +351,21 @@ bool TRTDetector::asyncInfer(Slot* slot, cudaStream_t stream, std::function<void
         cudaEventRecord(infer_end_event, stream);
     }
 
-    // 当 stream 中的所有任务完成（包括推理），通过 cudaLaunchHostFunc 回调上层
-    struct CbCtx {
-        TRTDetector* self;
-        nvinfer1::IExecutionContext* ctx;
-        Slot* slot;
-        std::function<void(Slot*, bool)> cb;
-    };
-
-    CbCtx* c = new CbCtx{this, ctx, slot, cb};
+    // 当 stream 中的所有任务完成（包括推理），通过 cudaLaunchHostFunc 仅做轻量入队
+    CallbackTask* c = new CallbackTask{ctx, slot, cb};
 
     // 递增 in-flight 计数器，确保 shutdown 前所有回调完成
     inflight_callbacks_.fetch_add(1, std::memory_order_acq_rel);
 
     cudaError_t err = cudaLaunchHostFunc(stream, [](void* userData){
-        CbCtx* cc = static_cast<CbCtx*>(userData);
-        // 在 host callback 中不要直接调用 CUDA runtime API（禁止），改为在新线程中执行回调。
-        std::thread([cc]() {
-            // [安全检查] 如果正在 shutdown，跳过后处理，仅做必要的清理
-            bool is_shutting_down = cc->self->shutting_down_.load(std::memory_order_acquire);
-            cc->self->releaseContext(cc->ctx);
-            if (cc->cb && !is_shutting_down) {
-                cc->cb(cc->slot, true);
-            } else if (cc->cb) {
-                // shutdown 中仍需释放帧和 slot，但跳过后处理
-                cc->cb(cc->slot, false);
-            }
-            // 递减 in-flight 计数器并通知 shutdown 等待者
-            int prev = cc->self->inflight_callbacks_.fetch_sub(1, std::memory_order_acq_rel);
-            if (prev <= 1) {
-                cc->self->inflight_cv_.notify_all();
-            }
-            delete cc;
-        }).detach();
+        CallbackTask* task = static_cast<CallbackTask*>(userData);
+        TRTDetector& det = TRTDetector::getInstance();
+        {
+            std::lock_guard<std::mutex> lk(det.callback_mutex_);
+            det.callback_queue_.push_back(std::move(*task));
+        }
+        det.callback_cv_.notify_one();
+        delete task;
     }, c);
 
     if (err != cudaSuccess) {
@@ -376,6 +383,8 @@ bool TRTDetector::asyncInfer(Slot* slot, cudaStream_t stream, std::function<void
 
 bool TRTDetector::inference(Slot* slot, nvinfer1::IExecutionContext* context, cudaStream_t stream) {
     if (!slot || !context) return false;
+
+    auto inferRange = nvtxutil::ScopedRange("TensorRT::enqueueV3", nvtxutil::color::Inference);
 
     int batch_size = slot->getCurBatchSize();
     if (batch_size <= 0) return false;
@@ -410,6 +419,8 @@ std::vector<std::vector<TRTDetector::Detection>> TRTDetector::parseDetections(Sl
     std::vector<std::vector<Detection>> results;
     if (!slot) return results;
 
+    auto postprocessRange = nvtxutil::ScopedRange("TRT::parseDetections", nvtxutil::color::Postprocess);
+
     // 确保当前线程绑定正确的 CUDA 设备
     cudaSetDevice(0);
 
@@ -441,7 +452,11 @@ std::vector<std::vector<TRTDetector::Detection>> TRTDetector::parseDetections(Sl
     size_t bytes_to_copy = total_floats * sizeof(float);
 
     auto t_d2h_start = std::chrono::steady_clock::now();
-    cudaError_t err = cudaMemcpy(host_out.data(), output_dev, bytes_to_copy, cudaMemcpyDeviceToHost);
+    cudaError_t err;
+    {
+        auto d2hRange = nvtxutil::ScopedRange("TRT::D2H", nvtxutil::color::Postprocess);
+        err = cudaMemcpy(host_out.data(), output_dev, bytes_to_copy, cudaMemcpyDeviceToHost);
+    }
     auto t_d2h_end = std::chrono::steady_clock::now();
     PipelineStats::getInstance().postprocess_d2h_us.fetch_add(
         static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(t_d2h_end - t_d2h_start).count()),

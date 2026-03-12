@@ -30,7 +30,9 @@ public:
      * @param output_tensor_bytes 单个 Batch 输出结果的字节数
      * @return 是否初始化成功
      */
-    bool init(int max_slots, size_t input_tensor_bytes, size_t output_tensor_bytes);
+    bool init(int max_slots, size_t input_tensor_bytes, size_t output_tensor_bytes,
+              size_t nv12_bytes = 0, int nv12_w = 0, int nv12_h = 0,
+              int samples_per_slot = 1);
 
     /**
      * @brief 热更新基础 slot 数量（影响后续 adjustSlotsForMode / shrinkToBase）
@@ -38,8 +40,8 @@ public:
     void setBaseSlots(int new_base);
 
     /**
-     * @brief 根据模式动态调整 slot 数量（仅增量分配或临时收缩）
-     * @param grid_mode 1 表示 1x1 (1 stream)，2 表示 2x2 (2 streams)，3 表示 3x3 (4 streams)
+     * @brief 按当前 base_slots_ 调整物理/可用 slot 数量
+     * @param grid_mode 兼容旧接口，当前不再参与倍率计算
      */
     bool adjustSlotsForMode(int grid_mode);
 
@@ -50,6 +52,11 @@ public:
      * @return Slot* 指针，或 nullptr（shutdown 后）
      */
     Slot* acquire();
+
+    /**
+     * @brief 非阻塞获取一个可用 Slot（无可用时返回 nullptr）
+     */
+    Slot* tryAcquire();
 
     /**
      * @brief 归还 Slot 到池子
@@ -92,7 +99,7 @@ public:
      */
     size_t slotBytesPerSlot() const {
         std::lock_guard<std::mutex> lock(mutex_);
-        return input_tensor_bytes_ + output_tensor_bytes_;
+        return input_tensor_bytes_ + output_tensor_bytes_ + nv12_bytes_ * static_cast<size_t>(samples_per_slot_);
     }
 
     /**
@@ -100,7 +107,7 @@ public:
      */
     size_t totalSlotBytesAllocated() const {
         std::lock_guard<std::mutex> lock(mutex_);
-        return static_cast<size_t>(current_max_slots_) * (input_tensor_bytes_ + output_tensor_bytes_);
+        return static_cast<size_t>(current_max_slots_) * (input_tensor_bytes_ + output_tensor_bytes_ + nv12_bytes_ * static_cast<size_t>(samples_per_slot_));
     }
 
     /**
@@ -108,7 +115,7 @@ public:
      */
     size_t allowedSlotBytes() const {
         std::lock_guard<std::mutex> lock(mutex_);
-        return static_cast<size_t>(allowed_max_slots_) * (input_tensor_bytes_ + output_tensor_bytes_);
+        return static_cast<size_t>(allowed_max_slots_) * (input_tensor_bytes_ + output_tensor_bytes_ + nv12_bytes_ * static_cast<size_t>(samples_per_slot_));
     }
 
     /**
@@ -163,6 +170,10 @@ private:
     bool shutdown_ = false;             // 停止标志，用于唤醒 acquire() 阻塞线程
     size_t input_tensor_bytes_ = 0;
     size_t output_tensor_bytes_ = 0;
+    size_t nv12_bytes_ = 0;
+    int nv12_w_ = 0;
+    int nv12_h_ = 0;
+    int samples_per_slot_ = 1;
     std::atomic<int> peak_slots_used_{0};  // 峰值 Slot 占用数
     // （不再在 MemoryManager 管理 stream 池，stream 由 Worker 管理或按需创建）
 };

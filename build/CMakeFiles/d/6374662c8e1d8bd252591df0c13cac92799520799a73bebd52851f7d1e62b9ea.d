@@ -7,16 +7,17 @@ CudaForge-YOLO_autogen/timestamp: \
   ../main.cpp \
   ../mainwindow.cpp \
   ../mainwindow.h \
-  ../src/core/DetectionQueue.hpp \
   ../src/core/DetectionResults.hpp \
   ../src/core/FrameQueue.cpp \
   ../src/core/FrameQueue.hpp \
   ../src/core/MemoryManager.cpp \
   ../src/core/MemoryManager.hpp \
+  ../src/core/NvtxUtils.hpp \
   ../src/core/PacketQueue.cpp \
   ../src/core/PacketQueue.hpp \
   ../src/core/PipelineStats.hpp \
   ../src/core/Slot.hpp \
+  ../src/core/SlotQueue.hpp \
   ../src/core/Worker.cpp \
   ../src/core/Worker.hpp \
   ../src/engine/Logger.hpp \
@@ -212,13 +213,16 @@ CudaForge-YOLO_autogen/timestamp: \
   /usr/include/c++/11/variant \
   /usr/include/c++/11/vector \
   /usr/include/ctype.h \
+  /usr/include/dlfcn.h \
   /usr/include/endian.h \
   /usr/include/errno.h \
+  /usr/include/fcntl.h \
   /usr/include/features-time64.h \
   /usr/include/features.h \
   /usr/include/inttypes.h \
   /usr/include/limits.h \
   /usr/include/linux/errno.h \
+  /usr/include/linux/falloc.h \
   /usr/include/linux/limits.h \
   /usr/include/locale.h \
   /usr/include/math.h \
@@ -242,10 +246,14 @@ CudaForge-YOLO_autogen/timestamp: \
   /usr/include/x86_64-linux-gnu/bits/byteswap.h \
   /usr/include/x86_64-linux-gnu/bits/confname.h \
   /usr/include/x86_64-linux-gnu/bits/cpu-set.h \
+  /usr/include/x86_64-linux-gnu/bits/dl_find_object.h \
+  /usr/include/x86_64-linux-gnu/bits/dlfcn.h \
   /usr/include/x86_64-linux-gnu/bits/endian.h \
   /usr/include/x86_64-linux-gnu/bits/endianness.h \
   /usr/include/x86_64-linux-gnu/bits/environments.h \
   /usr/include/x86_64-linux-gnu/bits/errno.h \
+  /usr/include/x86_64-linux-gnu/bits/fcntl-linux.h \
+  /usr/include/x86_64-linux-gnu/bits/fcntl.h \
   /usr/include/x86_64-linux-gnu/bits/floatn-common.h \
   /usr/include/x86_64-linux-gnu/bits/floatn.h \
   /usr/include/x86_64-linux-gnu/bits/flt-eval-method.h \
@@ -272,12 +280,14 @@ CudaForge-YOLO_autogen/timestamp: \
   /usr/include/x86_64-linux-gnu/bits/sched.h \
   /usr/include/x86_64-linux-gnu/bits/select.h \
   /usr/include/x86_64-linux-gnu/bits/setjmp.h \
+  /usr/include/x86_64-linux-gnu/bits/stat.h \
   /usr/include/x86_64-linux-gnu/bits/stdint-intn.h \
   /usr/include/x86_64-linux-gnu/bits/stdint-uintn.h \
   /usr/include/x86_64-linux-gnu/bits/stdio_lim.h \
   /usr/include/x86_64-linux-gnu/bits/stdlib-float.h \
   /usr/include/x86_64-linux-gnu/bits/struct_mutex.h \
   /usr/include/x86_64-linux-gnu/bits/struct_rwlock.h \
+  /usr/include/x86_64-linux-gnu/bits/struct_stat.h \
   /usr/include/x86_64-linux-gnu/bits/syscall.h \
   /usr/include/x86_64-linux-gnu/bits/thread-shared-types.h \
   /usr/include/x86_64-linux-gnu/bits/time.h \
@@ -301,6 +311,7 @@ CudaForge-YOLO_autogen/timestamp: \
   /usr/include/x86_64-linux-gnu/bits/types/sigset_t.h \
   /usr/include/x86_64-linux-gnu/bits/types/struct_FILE.h \
   /usr/include/x86_64-linux-gnu/bits/types/struct___jmp_buf_tag.h \
+  /usr/include/x86_64-linux-gnu/bits/types/struct_iovec.h \
   /usr/include/x86_64-linux-gnu/bits/types/struct_itimerspec.h \
   /usr/include/x86_64-linux-gnu/bits/types/struct_sched_param.h \
   /usr/include/x86_64-linux-gnu/bits/types/struct_timespec.h \
@@ -652,6 +663,14 @@ CudaForge-YOLO_autogen/timestamp: \
   /usr/local/cuda-13.1/targets/x86_64-linux/include/driver_functions.h \
   /usr/local/cuda-13.1/targets/x86_64-linux/include/driver_types.h \
   /usr/local/cuda-13.1/targets/x86_64-linux/include/library_types.h \
+  /usr/local/cuda-13.1/targets/x86_64-linux/include/nvtx3/nvToolsExt.h \
+  /usr/local/cuda-13.1/targets/x86_64-linux/include/nvtx3/nvtxDetail/nvtxImpl.h \
+  /usr/local/cuda-13.1/targets/x86_64-linux/include/nvtx3/nvtxDetail/nvtxImplCore.h \
+  /usr/local/cuda-13.1/targets/x86_64-linux/include/nvtx3/nvtxDetail/nvtxInit.h \
+  /usr/local/cuda-13.1/targets/x86_64-linux/include/nvtx3/nvtxDetail/nvtxInitDecls.h \
+  /usr/local/cuda-13.1/targets/x86_64-linux/include/nvtx3/nvtxDetail/nvtxInitDefs.h \
+  /usr/local/cuda-13.1/targets/x86_64-linux/include/nvtx3/nvtxDetail/nvtxLinkOnce.h \
+  /usr/local/cuda-13.1/targets/x86_64-linux/include/nvtx3/nvtxDetail/nvtxTypes.h \
   /usr/local/cuda-13.1/targets/x86_64-linux/include/surface_types.h \
   /usr/local/cuda-13.1/targets/x86_64-linux/include/texture_types.h \
   /usr/local/cuda-13.1/targets/x86_64-linux/include/vector_functions.h \

@@ -13,6 +13,7 @@ class QLabel;
 class QProgressBar;
 class QGroupBox;
 class QComboBox;
+class QSizeGrip;
 namespace Ui { class AdvancedSettingsDialog; }
 
 /**
@@ -24,10 +25,11 @@ class AdvancedSettingsDialog : public QDialog
     Q_OBJECT
 public:
     struct Settings {
-        int baseSlots = 2;
+        int baseSlots = 4;
         int workerCount = 0;        // 0 表示自动
+        int inferenceStreams = 2;   // 推理并行 stream 数
         int workerMaxBatch = 16;
-        int contextPoolSize = 0;    // 0 = 自动（VRAM-aware），>0 = 固定数量
+        int contextPoolSize = 1;    // 单 GPU 固定 1，不允许配置
         QString modelPath = "/home/zzx/code/Qt/CudaForge-YOLO/src/engines/yolo26n.engine";
         QString classesPath = "src/engines/class.txt";
         int statsInterval = 5;  // 性能统计间隔（秒）
@@ -71,12 +73,14 @@ private:
     QWidget* m_titleBar = nullptr;
     QLabel*  m_titleLabel = nullptr;
     QPushButton* m_btnCloseDialog = nullptr;
+    QSizeGrip*   m_resizeGrip = nullptr;
     bool m_dragging = false;
     QPoint m_dragOffset;
 
     // --- 参数输入控件 ---
     QSpinBox*    m_spinSlots = nullptr;
     QSpinBox*    m_spinWorkerCount = nullptr;
+    QSpinBox*    m_spinInferenceStreams = nullptr;
     QSpinBox*    m_spinBatch = nullptr;
     QSpinBox*    m_spinContextPool = nullptr;
     QLineEdit*   m_editModelPath = nullptr;

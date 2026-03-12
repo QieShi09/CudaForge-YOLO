@@ -8,6 +8,7 @@
 #include <QSet>
 #include <QDateTime>
 #include <QPoint>
+#include <nvtx3/nvToolsExt.h>
 #include "VideoDecoder.hpp"
 #include "DisplayManager.hpp"
 #include "FrameQueue.hpp"
@@ -82,6 +83,8 @@ private:
     void printPipelineStats();  // 定期输出管道性能统计
     void openAdvancedSettings();       // 打开高级设置弹窗
     void applySettings(const AdvancedSettingsDialog::Settings& s); // 应用设置
+    int activeConfiguredChannels() const;
+    int recommendedSlotCount(int effectiveBatch) const;
     
     // 通道设置
     QMap<int, ChannelSettings> m_channelSettings;
@@ -112,9 +115,10 @@ private:
     bool m_memoryInited = false;
     int m_workerCount = 0;
     int m_workerCountSetting = 0; // 0 = 自动模式，>0 = 手动指定
+    int m_inferenceStreams = 2;
     int m_workerMaxBatch = 16;
-    int m_contextPoolSize = 0; // 0 = 自动, >0 = 固定数量
-    int m_baseSlots = 2;
+    int m_contextPoolSize = 1; // 单 GPU 固定 1
+    int m_baseSlots = 4; // 作为自动策略下限值
     QString m_modelPath = "/home/zzx/code/Qt/CudaForge-YOLO/src/engines/yolo26n.engine";
     std::vector<QString> m_classNames;
     QDateTime m_detectionStartTime;
@@ -128,6 +132,7 @@ private:
     int m_loadTestTargetFps = 0;
     QMap<int, ChannelSettings> m_loadTestPrevSettings;
     QSet<int> m_loadTestPrevRunning;
+    nvtxRangeId_t m_nvtxLoadTestRangeId = 0;
 
     // 高级设置
     QPushButton* m_btnAdvancedSettings = nullptr;

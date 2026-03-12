@@ -1,5 +1,4 @@
 #include "DisplayManager.hpp"
-#include "CudaImageProc.cuh"
 #include "../core/PipelineStats.hpp"
 #include <QDebug>
 #include <chrono>
@@ -67,8 +66,6 @@ DisplayWorker::~DisplayWorker() {
 void DisplayWorker::processLoop() {
     fprintf(stderr, "[Display ch=%d] processLoop started\n", channel_id_);
     fflush(stderr);
-    uint8_t* d_linear_input = nullptr;
-    int linear_input_capacity = 0;
     // 声明 FPS 计数器变量
     int frame_count = 0;
     auto last_fps_time = std::chrono::steady_clock::now();
@@ -101,21 +98,6 @@ void DisplayWorker::processLoop() {
             continue;
         }
 
-        // 1. 准备 GPU 输出缓冲区 (RGBA)
-        if (gpu_width_ != w || gpu_height_ != h) {
-            if (gpu_buffer_) { cudaFree(gpu_buffer_); gpu_buffer_ = nullptr; }
-            cudaError_t err = cudaMalloc(&gpu_buffer_, (size_t)w * h * 4);
-            if (err != cudaSuccess) {
-                fprintf(stderr, "[Display ch=%d] FATAL: cudaMalloc gpu_buffer_ (%dx%d, %zu bytes) failed: %s\n",
-                        channel_id_, w, h, (size_t)w * h * 4, cudaGetErrorString(err));
-                av_frame_free(&src_frame);
-                gpu_buffer_ = nullptr;
-                continue;
-            }
-            gpu_width_ = w;
-            gpu_height_ = h;
-        }
-
         if (src_frame->format != AV_PIX_FMT_CUDA) {
             fprintf(stderr, "[Display ch=%d] Unexpected non-CUDA frame (fmt=%d), dropping.\n",
                     channel_id_, src_frame->format);
@@ -132,23 +114,27 @@ void DisplayWorker::processLoop() {
 
         bool has_uv_plane = (src_frame->data[1] != nullptr);
         if (has_uv_plane) {
-            // NV12 (Y + interleaved UV) -> RGBA
-            int nv12_size = w * h * 3 / 2;
-            if (!d_linear_input || linear_input_capacity < nv12_size) {
-                if (d_linear_input) { cudaFree(d_linear_input); d_linear_input = nullptr; }
-                cudaError_t err = cudaMalloc(&d_linear_input, nv12_size);
+            // NV12: 保持原格式，供 UI 直接渲染
+            size_t nv12_size = static_cast<size_t>(w) * h * 3 / 2;
+            if (gpu_width_ != w || gpu_height_ != h || gpu_buffer_bytes_ < nv12_size) {
+                if (gpu_buffer_) { cudaFree(gpu_buffer_); gpu_buffer_ = nullptr; }
+                cudaError_t err = cudaMalloc(&gpu_buffer_, nv12_size);
                 if (err != cudaSuccess) {
-                    fprintf(stderr, "[Display ch=%d] FATAL: cudaMalloc d_linear_input (%d bytes) failed: %s\n",
+                    fprintf(stderr, "[Display ch=%d] FATAL: cudaMalloc NV12 display buffer (%zu bytes) failed: %s\n",
                             channel_id_, nv12_size, cudaGetErrorString(err));
-                    d_linear_input = nullptr;
-                    linear_input_capacity = 0;
+                    gpu_buffer_ = nullptr;
+                    gpu_buffer_bytes_ = 0;
                     av_frame_free(&src_frame);
                     continue;
                 }
-                linear_input_capacity = nv12_size;
+                gpu_buffer_bytes_ = nv12_size;
+                gpu_width_ = w;
+                gpu_height_ = h;
             }
-            cudaError_t e1 = cudaMemcpy2D(d_linear_input, w, src_frame->data[0], src_frame->linesize[0], w, h, cudaMemcpyDeviceToDevice);
-            cudaError_t e2 = cudaMemcpy2D(d_linear_input + w * h, w, src_frame->data[1], src_frame->linesize[1], w, h / 2, cudaMemcpyDeviceToDevice);
+            uint8_t* d_y = reinterpret_cast<uint8_t*>(gpu_buffer_);
+            uint8_t* d_uv = d_y + static_cast<size_t>(w) * h;
+            cudaError_t e1 = cudaMemcpy2D(d_y, w, src_frame->data[0], src_frame->linesize[0], w, h, cudaMemcpyDeviceToDevice);
+            cudaError_t e2 = cudaMemcpy2D(d_uv, w, src_frame->data[1], src_frame->linesize[1], w, h / 2, cudaMemcpyDeviceToDevice);
             if (e1 != cudaSuccess || e2 != cudaSuccess) {
                 fprintf(stderr, "[Display ch=%d] cudaMemcpy2D NV12 failed: Y=%s UV=%s (data[0]=%p ls[0]=%d data[1]=%p ls[1]=%d %dx%d)\n",
                         channel_id_, cudaGetErrorString(e1), cudaGetErrorString(e2),
@@ -157,9 +143,26 @@ void DisplayWorker::processLoop() {
                 av_frame_free(&src_frame);
                 continue;
             }
-            launchNV12ToRGBA(d_linear_input, d_linear_input + w * h, w, w, (uint8_t*)gpu_buffer_, w * 4, w, h);
+            current_pitch.store(w, std::memory_order_relaxed);
+            current_format.store(AV_PIX_FMT_NV12, std::memory_order_relaxed);
         } else {
             // Already RGBA on device: just copy into the persistent buffer for rendering
+            size_t rgba_size = static_cast<size_t>(w) * h * 4;
+            if (gpu_width_ != w || gpu_height_ != h || gpu_buffer_bytes_ < rgba_size) {
+                if (gpu_buffer_) { cudaFree(gpu_buffer_); gpu_buffer_ = nullptr; }
+                cudaError_t err = cudaMalloc(&gpu_buffer_, rgba_size);
+                if (err != cudaSuccess) {
+                    fprintf(stderr, "[Display ch=%d] FATAL: cudaMalloc RGBA display buffer (%zu bytes) failed: %s\n",
+                            channel_id_, rgba_size, cudaGetErrorString(err));
+                    gpu_buffer_ = nullptr;
+                    gpu_buffer_bytes_ = 0;
+                    av_frame_free(&src_frame);
+                    continue;
+                }
+                gpu_buffer_bytes_ = rgba_size;
+                gpu_width_ = w;
+                gpu_height_ = h;
+            }
             cudaError_t e = cudaMemcpy2D((uint8_t*)gpu_buffer_, w * 4,
                          src_frame->data[0], src_frame->linesize[0],
                          w * 4, h, cudaMemcpyDeviceToDevice);
@@ -170,12 +173,13 @@ void DisplayWorker::processLoop() {
                 av_frame_free(&src_frame);
                 continue;
             }
+            current_pitch.store(w * 4, std::memory_order_relaxed);
+            current_format.store(AV_PIX_FMT_RGBA, std::memory_order_relaxed);
         }
 
         // 更新原子变量，不发信号
         current_w.store(w, std::memory_order_relaxed);
         current_h.store(h, std::memory_order_relaxed);
-        current_pitch.store(w * 4, std::memory_order_relaxed);
         current_ptr.store(gpu_buffer_, std::memory_order_release); // 发布最新帧
         PipelineStats::getInstance().frames_displayed.fetch_add(1, std::memory_order_relaxed);
 
@@ -190,7 +194,5 @@ void DisplayWorker::processLoop() {
 
     }
     
-    if (d_linear_input) cudaFree(d_linear_input);
-
     Q_EMIT finished();
 }

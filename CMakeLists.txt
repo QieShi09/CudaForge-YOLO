@@ -95,6 +95,9 @@ target_link_libraries(CudaForge-YOLO
     PkgConfig::FFMPEG
 )
 
+# CUDA 13.x 提供 header-only 的 NVTX3（见 nvtx3/nvToolsExt.h），
+# 因此此项目无需额外链接 libnvToolsExt。
+
 target_compile_definitions(CudaForge-YOLO PRIVATE QT_NO_KEYWORDS)
 set_target_properties(CudaForge-YOLO PROPERTIES INSTALL_RPATH_USE_LINK_PATH TRUE)
 add_compile_options(-Wno-deprecated-declarations)

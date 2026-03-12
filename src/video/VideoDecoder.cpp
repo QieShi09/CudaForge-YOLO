@@ -9,8 +9,12 @@
 #include <QDebug>
 #include <cuda_runtime.h>
 #include <cstdlib>
-#include "../core/DetectionQueue.hpp"
+#include "../core/SlotQueue.hpp"
+#include "../core/MemoryManager.hpp"
+#include "../engine/TRTDetector.hpp"
+#include "../kernels/CudaImageProc.cuh"
 #include "../core/PipelineStats.hpp"
+#include "../core/NvtxUtils.hpp"
 
 extern "C" {
 #include <libswscale/swscale.h>
@@ -73,6 +77,11 @@ VideoDecoder::~VideoDecoder()
 {
     // 确保解码循环已经停止
     stopDecoding();
+
+    if (det_upload_stream_) {
+        cudaStreamDestroy(det_upload_stream_);
+        det_upload_stream_ = nullptr;
+    }
 
     std::lock_guard<std::mutex> lk(codec_mutex_);
 
@@ -362,6 +371,12 @@ enum AVPixelFormat VideoDecoder::get_hw_format(AVCodecContext *ctx, const enum A
 
 void VideoDecoder::startDecoding()
 {
+    if (!det_upload_stream_) {
+        if (cudaStreamCreateWithFlags(&det_upload_stream_, cudaStreamNonBlocking) != cudaSuccess) {
+            det_upload_stream_ = nullptr;
+        }
+    }
+
     // 1. 初始化硬件 (CUDA)
     if (!initHardware())
         return;
@@ -472,226 +487,272 @@ void VideoDecoder::startDecoding()
         }
 
         // 2. 发送给解码器
-        PipelineStats::getInstance().packets_popped.fetch_add(1, std::memory_order_relaxed);
-        auto t_send_start = std::chrono::steady_clock::now();
         int ret = 0;
         {
-            std::unique_lock<std::mutex> lk(codec_mutex_);
-            // 再次检查 ctx 并在发送前验证 packet
-            if (!cdc_ctx_ || !avcodec_is_open(cdc_ctx_)) {
-                lk.unlock();
-                av_packet_free(&pkt);
-                break;
-            }
-            // 只拦截"有 size 但 data 为空"的真正损坏包
-            // 注意：pkt->size==0 && !pkt->data 是 FFmpeg flush packet（EOF刷新），必须放行
-            // 注意：不能在 av_packet_free 之后再访问 pkt->size，否则 null deref → SIGSEGV
-            if (pkt->size > 0 && !pkt->data) {
-                int bad_size = pkt->size;
-                lk.unlock();
-                av_packet_free(&pkt);
-                fprintf(stderr, "[VideoDecoder] Error: Invalid packet data (size=%d, data=null), dropped.\n", bad_size);
-                continue;
-            }
-            ret = avcodec_send_packet(cdc_ctx_, pkt);
-        }
-        auto t_send_end = std::chrono::steady_clock::now();
-        PipelineStats::getInstance().decode_send_us.fetch_add(
-            static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(t_send_end - t_send_start).count()),
-            std::memory_order_relaxed);
-        av_packet_free(&pkt); // 归还包内存
-
-        if (ret < 0)
-        {char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
-            av_strerror(ret, errbuf, AV_ERROR_MAX_STRING_SIZE);
-            std::cerr << "[VideoDecoder] Error sending packet: " << errbuf << " (" << ret << ")" << std::endl;
-            
-            if (ret == AVERROR(EAGAIN)) {
-                // 解码器暂时背压，继续走 receive 流程释放 surface
-                ret = 0;
-            } else if (ret == AVERROR_INVALIDDATA) {
-                // "No decoder surfaces left" 也以 AVERROR_INVALIDDATA 返回
-                // 此时必须进入 receive 循环释放已解码帧（归还 surface），否则 surface 永远无法回收
-                // 旧代码用 continue 跳过了 receive → 形成死循环 → surface 耗尽 → 崩溃
-                if (hw_decode_enabled_) {
-                    hw_error_streak++;
-                    std::cerr << "[VideoDecoder] send_packet transient error, streak="
-                              << hw_error_streak << "/" << kHwFallbackThreshold << std::endl;
-                    if (hw_error_streak >= kHwFallbackThreshold) {
-                        std::cerr << "Error sending packet for decoding (persistent)." << std::endl;
-                        fallbackToSoftware("send_packet persistent invaliddata");
-                        hw_error_streak = 0;
-                    }
-                }
-                ret = 0;  // 落入 receive 循环以释放 surface
-            } else {
-                if (hw_decode_enabled_) {
-                    hw_error_streak++;
-                    if (hw_error_streak >= kHwFallbackThreshold) {
-                        std::cerr << "Error sending packet for decoding (persistent)." << std::endl;
-                        fallbackToSoftware("send_packet persistent error");
-                        hw_error_streak = 0;
-                    }
-                }
-                ret = 0;  // 仍然尝试 receive 已解码帧
-            }
-        } else {
-            hw_error_streak = 0;
-        }
-
-        // 3. 接收解码后的帧 (可能一次 send 对应多次 receive)
-        auto t_recv_start = std::chrono::steady_clock::now();
-        while (ret >= 0)
-        {
+            auto decodeRange = nvtxutil::ScopedRange(
+                nvtxutil::makeStageLabel("Decode", channel_id_),
+                nvtxutil::color::Decode);
+            PipelineStats::getInstance().packets_popped.fetch_add(1, std::memory_order_relaxed);
+            auto t_send_start = std::chrono::steady_clock::now();
             {
                 std::unique_lock<std::mutex> lk(codec_mutex_);
-                if (!cdc_ctx_) {
+                // 再次检查 ctx 并在发送前验证 packet
+                if (!cdc_ctx_ || !avcodec_is_open(cdc_ctx_)) {
                     lk.unlock();
-                    ret = AVERROR(EAGAIN);
-                } else {
-                    ret = avcodec_receive_frame(cdc_ctx_, frame);
+                    av_packet_free(&pkt);
+                    break;
                 }
+                // 只拦截"有 size 但 data 为空"的真正损坏包
+                // 注意：pkt->size==0 && !pkt->data 是 FFmpeg flush packet（EOF刷新），必须放行
+                // 注意：不能在 av_packet_free 之后再访问 pkt->size，否则 null deref → SIGSEGV
+                if (pkt->size > 0 && !pkt->data) {
+                    int bad_size = pkt->size;
+                    lk.unlock();
+                    av_packet_free(&pkt);
+                    fprintf(stderr, "[VideoDecoder] Error: Invalid packet data (size=%d, data=null), dropped.\n", bad_size);
+                    continue;
+                }
+                ret = avcodec_send_packet(cdc_ctx_, pkt);
             }
-            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
-                break;
-            if (ret < 0) {
-                if (hw_decode_enabled_) {
-                    hw_error_streak++;
-                    if (hw_error_streak >= kHwFallbackThreshold) {
-                        fallbackToSoftware("receive_frame persistent error");
-                        hw_error_streak = 0;
+            auto t_send_end = std::chrono::steady_clock::now();
+            PipelineStats::getInstance().decode_send_us.fetch_add(
+                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(t_send_end - t_send_start).count()),
+                std::memory_order_relaxed);
+            av_packet_free(&pkt); // 归还包内存
+
+            if (ret < 0)
+            {char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
+                av_strerror(ret, errbuf, AV_ERROR_MAX_STRING_SIZE);
+                std::cerr << "[VideoDecoder] Error sending packet: " << errbuf << " (" << ret << ")" << std::endl;
+                
+                if (ret == AVERROR(EAGAIN)) {
+                    // 解码器暂时背压，继续走 receive 流程释放 surface
+                    ret = 0;
+                } else if (ret == AVERROR_INVALIDDATA) {
+                    // "No decoder surfaces left" 也以 AVERROR_INVALIDDATA 返回
+                    // 此时必须进入 receive 循环释放已解码帧（归还 surface），否则 surface 永远无法回收
+                    // 旧代码用 continue 跳过了 receive → 形成死循环 → surface 耗尽 → 崩溃
+                    if (hw_decode_enabled_) {
+                        hw_error_streak++;
+                        std::cerr << "[VideoDecoder] send_packet transient error, streak="
+                                  << hw_error_streak << "/" << kHwFallbackThreshold << std::endl;
+                        if (hw_error_streak >= kHwFallbackThreshold) {
+                            std::cerr << "Error sending packet for decoding (persistent)." << std::endl;
+                            fallbackToSoftware("send_packet persistent invaliddata");
+                            hw_error_streak = 0;
+                        }
+                    }
+                    ret = 0;  // 落入 receive 循环以释放 surface
+                } else {
+                    if (hw_decode_enabled_) {
+                        hw_error_streak++;
+                        if (hw_error_streak >= kHwFallbackThreshold) {
+                            std::cerr << "Error sending packet for decoding (persistent)." << std::endl;
+                            fallbackToSoftware("send_packet persistent error");
+                            hw_error_streak = 0;
+                        }
+                    }
+                    ret = 0;  // 仍然尝试 receive 已解码帧
+                }
+            } else {
+                hw_error_streak = 0;
+            }
+
+            // 3. 接收解码后的帧 (可能一次 send 对应多次 receive)
+            auto t_recv_start = std::chrono::steady_clock::now();
+            while (ret >= 0)
+            {
+                {
+                    std::unique_lock<std::mutex> lk(codec_mutex_);
+                    if (!cdc_ctx_) {
+                        lk.unlock();
+                        ret = AVERROR(EAGAIN);
+                    } else {
+                        ret = avcodec_receive_frame(cdc_ctx_, frame);
                     }
                 }
-                break;
-            }
+                if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+                    break;
+                if (ret < 0) {
+                    if (hw_decode_enabled_) {
+                        hw_error_streak++;
+                        if (hw_error_streak >= kHwFallbackThreshold) {
+                            fallbackToSoftware("receive_frame persistent error");
+                            hw_error_streak = 0;
+                        }
+                    }
+                    break;
+                }
 
-            hw_error_streak = 0;
+                hw_error_streak = 0;
 
-            // --- 智能自适应跳帧逻辑 ---
-            double native_fps = getNativeFPS();
-            int skip_step = 1;
+                // --- 智能自适应跳帧逻辑 ---
+                double native_fps = getNativeFPS();
+                int skip_step = 1;
 
-            // 计算实际目标 FPS：网格模式固定 30，详情模式使用 target_fps_，并乘以播放速率（例如 2x -> 120）
-            double target = (low_fps_mode_ ? 30.0 : static_cast<double>(target_fps_.load()));
-            target *= playback_speed_; // playback_speed_ 默认为 1.0，在文件模式下可调整
-            if (target < 1.0) target = 1.0;
+                // 计算实际目标 FPS：网格模式固定 30，详情模式使用 target_fps_，并乘以播放速率（例如 2x -> 120）
+                double target = (low_fps_mode_ ? 30.0 : static_cast<double>(target_fps_.load()));
+                target *= playback_speed_; // playback_speed_ 默认为 1.0，在文件模式下可调整
+                if (target < 1.0) target = 1.0;
 
-            if (native_fps > target)
-            {
-                skip_step = std::max(1, (int)std::round(native_fps / target));
-            }
+                if (native_fps > target)
+                {
+                    skip_step = std::max(1, (int)std::round(native_fps / target));
+                }
 
-            if (frame_counter++ % skip_step != 0)
-            {
-                av_frame_unref(frame);
-                continue;
-            }
-
-            int detection_src_fmt = AV_PIX_FMT_NV12;
-            // 纯 HW 模式：非 CUDA 帧不应出现，直接丢弃
-            if (frame->format != AV_PIX_FMT_CUDA) {
-                fprintf(stderr, "[VideoDecoder] ch=%d: unexpected non-CUDA frame (fmt=%d), dropping.\n",
-                        channel_id_, frame->format);
-                av_frame_unref(frame);
-                continue;
-            }
-
-            // === [关键修复] 立即将 NVDEC surface 拷贝到独立 CUDA 缓冲 ===
-            // 问题：av_frame_clone 引用 NVDEC surface，FrameQueue/DetectionQueue 持有时间过长
-            //       导致 "No decoder surfaces left" → decode 失败级联崩溃
-            // 方案：D2D memcpy 后立即 av_frame_unref，NVDEC surface 瞬间归还
-            {
-                int fw = frame->width, fh = frame->height;
-                int64_t fpts = frame->pts;
-                size_t nv12_size = (size_t)fw * fh * 3 / 2;
-                uint8_t* d_buf = nullptr;
-                cudaError_t alloc_err = cudaMalloc(&d_buf, nv12_size);
-                if (alloc_err != cudaSuccess) {
-                    fprintf(stderr, "[VideoDecoder] ch=%d: cudaMalloc standalone NV12 (%zu B) failed: %s\n",
-                            channel_id_, nv12_size, cudaGetErrorString(alloc_err));
+                if (frame_counter++ % skip_step != 0)
+                {
                     av_frame_unref(frame);
                     continue;
                 }
-                // Y 平面
-                cudaMemcpy2D(d_buf, fw,
-                             frame->data[0], frame->linesize[0],
-                             fw, fh, cudaMemcpyDeviceToDevice);
-                // UV 平面
-                cudaMemcpy2D(d_buf + (size_t)fw * fh, fw,
-                             frame->data[1], frame->linesize[1],
-                             fw, fh / 2, cudaMemcpyDeviceToDevice);
 
-                // 释放 NVDEC surface（引用计数 -1，surface 立即归还给硬件解码器）
-                av_frame_unref(frame);
-
-                // 用独立 CUDA 缓冲重新填充 frame，AVBufferRef 负责生命周期
-                frame->format = AV_PIX_FMT_CUDA;
-                frame->width  = fw;
-                frame->height = fh;
-                frame->pts    = fpts;
-                frame->buf[0] = av_buffer_create(d_buf, (int)nv12_size,
-                                                  cuda_buf_free, nullptr, 0);
-                frame->data[0]     = d_buf;
-                frame->data[1]     = d_buf + (size_t)fw * fh;
-                frame->linesize[0] = fw;
-                frame->linesize[1] = fw;
-            }
-
-            PipelineStats::getInstance().frames_decoded.fetch_add(1, std::memory_order_relaxed);
-            AVFrame *frame_clone = av_frame_clone(frame);
-            if (frame_clone) {
-                // push 是阻塞的。如果队列满了，这里会卡住，直到 DisplayManager 取走一帧。
-                // 这就实现了“显示端控制速率”。
-                auto t_fq_push_start = std::chrono::steady_clock::now();
-                // 实时源不应反压解码线程，否则会导致 NVDEC surface 不足。
-                // 文件源保持阻塞 push 以保证逐帧顺序与完整性。
-                bool fq_ok = is_file_mode_
-                    ? frame_queue_->push(frame_clone)
-                    : frame_queue_->pushDropOldest(frame_clone);
-                auto t_fq_push_end = std::chrono::steady_clock::now();
-                PipelineStats::getInstance().framequeue_push_wait_us.fetch_add(
-                    static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(t_fq_push_end - t_fq_push_start).count()),
-                    std::memory_order_relaxed);
-                if (!fq_ok) {
-                    av_frame_free(&frame_clone); // 如果 push 返回 false (停止了)，释放内存
-                    PipelineStats::getInstance().frames_dropped_fq.fetch_add(1, std::memory_order_relaxed);
-                    break; // 队列已停，立即跳出内层接收循环，防止刷屏日志
+                // 纯 HW 模式：非 CUDA 帧不应出现，直接丢弃
+                if (frame->format != AV_PIX_FMT_CUDA) {
+                    fprintf(stderr, "[VideoDecoder] ch=%d: unexpected non-CUDA frame (fmt=%d), dropping.\n",
+                            channel_id_, frame->format);
+                    av_frame_unref(frame);
+                    continue;
                 }
-                PipelineStats::getInstance().frames_pushed_fq.fetch_add(1, std::memory_order_relaxed);
 
-                // 仅在 FrameQueue push 成功后才尝试推入 DetectionQueue
-                // 从原始 frame 克隆而非 frame_clone，因为 frame_clone 已被
-                //        push 到 FrameQueue，DisplayWorker 可能在另一线程中已释放它
-                if (DetectionQueue::getInstance().isChannelEnabled(channel_id_)) {
-                    AVFrame* det_clone = av_frame_clone(frame);
-                    if (det_clone) {
-                        bool pushed = DetectionQueue::getInstance().push(det_clone, channel_id_, detection_src_fmt, skip_step, channel_epoch_);
-                        if (!pushed) {
-                            av_frame_free(&det_clone); // push failed (queue full), free
-                            PipelineStats::getInstance().frames_dropped_dq.fetch_add(1, std::memory_order_relaxed);
-                        } else {
-                            PipelineStats::getInstance().frames_pushed_dq.fetch_add(1, std::memory_order_relaxed);
-                            if (is_image_mode_) {
-                                fprintf(stderr, "[VideoDecoder] Image frame pushed to DetectionQueue (ch=%d, fmt=%d, %dx%d)\n",
-                                        channel_id_, detection_src_fmt, frame->width, frame->height);
-                            }
-                        }
+                // === [关键修复] 立即将 NVDEC surface 拷贝到独立 CUDA 缓冲 ===
+                // 问题：av_frame_clone 引用 NVDEC surface，FrameQueue/SlotQueue 持有时间过长
+                //       导致 "No decoder surfaces left" → decode 失败级联崩溃
+                // 方案：D2D memcpy 后立即 av_frame_unref，NVDEC surface 瞬间归还
+                {
+                    auto frameCopyRange = nvtxutil::ScopedRange(
+                        nvtxutil::makeStageLabel("DecodeFrameCopy", channel_id_),
+                        nvtxutil::color::Decode);
+                    int fw = frame->width, fh = frame->height;
+                    int64_t fpts = frame->pts;
+                    size_t nv12_size = (size_t)fw * fh * 3 / 2;
+                    uint8_t* d_buf = nullptr;
+                    cudaError_t alloc_err = cudaMalloc(&d_buf, nv12_size);
+                    if (alloc_err != cudaSuccess) {
+                        fprintf(stderr, "[VideoDecoder] ch=%d: cudaMalloc standalone NV12 (%zu B) failed: %s\n",
+                                channel_id_, nv12_size, cudaGetErrorString(alloc_err));
+                        av_frame_unref(frame);
+                        continue;
                     }
-                } else if (is_image_mode_) {
-                    fprintf(stderr, "[VideoDecoder] WARNING: Image ch=%d detection channel disabled, frame NOT pushed to DetectionQueue\n",
-                            channel_id_);
-                }
-            } else {
-                // 如果 frame_clone 失败（例如 EOF 或内存不足），立即退出循环
-                break;
-            }
+                    // Y 平面
+                    cudaMemcpy2D(d_buf, fw,
+                                 frame->data[0], frame->linesize[0],
+                                 fw, fh, cudaMemcpyDeviceToDevice);
+                    // UV 平面
+                    cudaMemcpy2D(d_buf + (size_t)fw * fh, fw,
+                                 frame->data[1], frame->linesize[1],
+                                 fw, fh / 2, cudaMemcpyDeviceToDevice);
 
-            av_frame_unref(frame); // 释放引用，准备接收下一帧
+                    // 释放 NVDEC surface（引用计数 -1，surface 立即归还给硬件解码器）
+                    av_frame_unref(frame);
+
+                    // 用独立 CUDA 缓冲重新填充 frame，AVBufferRef 负责生命周期
+                    frame->format = AV_PIX_FMT_CUDA;
+                    frame->width  = fw;
+                    frame->height = fh;
+                    frame->pts    = fpts;
+                    frame->buf[0] = av_buffer_create(d_buf, (int)nv12_size,
+                                                      cuda_buf_free, nullptr, 0);
+                    frame->data[0]     = d_buf;
+                    frame->data[1]     = d_buf + (size_t)fw * fh;
+                    frame->linesize[0] = fw;
+                    frame->linesize[1] = fw;
+                }
+
+                PipelineStats::getInstance().frames_decoded.fetch_add(1, std::memory_order_relaxed);
+                AVFrame *frame_clone = av_frame_clone(frame);
+                if (frame_clone) {
+                    auto dispatchRange = nvtxutil::ScopedRange(
+                        nvtxutil::makeStageLabel("DispatchFrame", channel_id_),
+                        nvtxutil::color::Control);
+                    // push 是阻塞的。如果队列满了，这里会卡住，直到 DisplayManager 取走一帧。
+                    // 这就实现了“显示端控制速率”。
+                    auto t_fq_push_start = std::chrono::steady_clock::now();
+                    // 实时源不应反压解码线程，否则会导致 NVDEC surface 不足。
+                    // 文件源保持阻塞 push 以保证逐帧顺序与完整性。
+                    bool fq_ok = is_file_mode_
+                        ? frame_queue_->push(frame_clone)
+                        : frame_queue_->pushDropOldest(frame_clone);
+                    auto t_fq_push_end = std::chrono::steady_clock::now();
+                    PipelineStats::getInstance().framequeue_push_wait_us.fetch_add(
+                        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(t_fq_push_end - t_fq_push_start).count()),
+                        std::memory_order_relaxed);
+                    if (!fq_ok) {
+                        av_frame_free(&frame_clone); // 如果 push 返回 false (停止了)，释放内存
+                        PipelineStats::getInstance().frames_dropped_fq.fetch_add(1, std::memory_order_relaxed);
+                        break; // 队列已停，立即跳出内层接收循环，防止刷屏日志
+                    }
+                    PipelineStats::getInstance().frames_pushed_fq.fetch_add(1, std::memory_order_relaxed);
+
+                    // 仅在 FrameQueue push 成功后才尝试推入 SlotQueue
+                    // 从原始 frame 克隆而非 frame_clone，因为 frame_clone 已被
+                    //        push 到 FrameQueue，DisplayWorker 可能在另一线程中已释放它
+                    if (SlotQueue::getInstance().isChannelEnabled(channel_id_)) {
+                        int model_w = TRTDetector::getInstance().getInputW();
+                        int model_h = TRTDetector::getInstance().getInputH();
+                        if (model_w > 0 && model_h > 0 && frame->data[0] && frame->data[1]) {
+                            float r = std::min(static_cast<float>(model_w) / frame->width,
+                                               static_cast<float>(model_h) / frame->height);
+                            int new_w = static_cast<int>(frame->width * r);
+                            int new_h = static_cast<int>(frame->height * r);
+                            Slot::PreprocMeta meta;
+                            meta.orig_w = frame->width;
+                            meta.orig_h = frame->height;
+                            meta.scale = r;
+                            meta.pad_w = (model_w - new_w) / 2;
+                            meta.pad_h = (model_h - new_h) / 2;
+
+                            bool pushed = SlotQueue::getInstance().appendSample(
+                                [this, frame, model_w, model_h](Slot* det_slot, int sample_idx) -> bool {
+                                    if (!det_slot || !det_slot->getDeviceNV12Y(sample_idx) || !det_slot->getDeviceNV12UV(sample_idx)) {
+                                        return false;
+                                    }
+                                    cudaStream_t upload_stream = det_upload_stream_ ? det_upload_stream_ : static_cast<cudaStream_t>(0);
+                                    launchResizeNV12ToNV12Device(
+                                        reinterpret_cast<const uint8_t*>(frame->data[0]),
+                                        reinterpret_cast<const uint8_t*>(frame->data[1]),
+                                        frame->linesize[0],
+                                        frame->linesize[1],
+                                        frame->width,
+                                        frame->height,
+                                        det_slot->getDeviceNV12Y(sample_idx),
+                                        det_slot->getDeviceNV12UV(sample_idx),
+                                        det_slot->getNV12Pitch(),
+                                        det_slot->getNV12Pitch(),
+                                        model_w,
+                                        model_h,
+                                        upload_stream);
+                                    cudaEventRecord(det_slot->getEvent(), upload_stream);
+                                    return true;
+                                },
+                                channel_id_, channel_epoch_, meta);
+                            if (!pushed) {
+                                PipelineStats::getInstance().frames_dropped_dq.fetch_add(1, std::memory_order_relaxed);
+                            } else {
+                                PipelineStats::getInstance().frames_pushed_dq.fetch_add(1, std::memory_order_relaxed);
+                                if (is_image_mode_) {
+                                    fprintf(stderr, "[VideoDecoder] Image frame appended to batched slot (ch=%d, %dx%d)\n",
+                                            channel_id_, frame->width, frame->height);
+                                }
+                            }
+                        } else {
+                            PipelineStats::getInstance().frames_dropped_dq.fetch_add(1, std::memory_order_relaxed);
+                        }
+                    } else if (is_image_mode_) {
+                        fprintf(stderr, "[VideoDecoder] WARNING: Image ch=%d detection channel disabled, frame NOT pushed to SlotQueue\n",
+                                channel_id_);
+                    }
+                } else {
+                    // 如果 frame_clone 失败（例如 EOF 或内存不足），立即退出循环
+                    break;
+                }
+
+                av_frame_unref(frame); // 释放引用，准备接收下一帧
+            }
+            auto t_recv_end = std::chrono::steady_clock::now();
+            PipelineStats::getInstance().decode_receive_us.fetch_add(
+                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(t_recv_end - t_recv_start).count()),
+                std::memory_order_relaxed);
         }
-        auto t_recv_end = std::chrono::steady_clock::now();
-        PipelineStats::getInstance().decode_receive_us.fetch_add(
-            static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(t_recv_end - t_recv_start).count()),
-            std::memory_order_relaxed);
     }
 
     av_frame_free(&frame);

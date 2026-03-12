@@ -6,6 +6,7 @@
 #include <atomic>
 #include <mutex>
 #include <condition_variable>
+#include <cuda_runtime_api.h>
 #include "VideoDemuxer.hpp"
 #include "PacketQueue.hpp"
 #include "FrameQueue.hpp"
@@ -133,6 +134,7 @@ private:
     bool using_hw_decoder_ = false;
     bool decoder_mode_counted_ = false;
     size_t decoder_vram_bytes_ = 0;
+    cudaStream_t det_upload_stream_ = nullptr;
 
     static std::atomic<size_t> s_total_decoder_vram_bytes;
     static std::atomic<int> s_hw_decoder_count;

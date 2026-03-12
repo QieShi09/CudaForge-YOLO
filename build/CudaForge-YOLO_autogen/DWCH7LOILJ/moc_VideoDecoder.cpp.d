@@ -396,4 +396,13 @@
   /usr/include/x86_64-linux-gnu/sys/syscall.h \
   /usr/include/x86_64-linux-gnu/sys/types.h \
   /usr/lib/gcc/x86_64-linux-gnu/11/include/stdarg.h \
-  /usr/lib/gcc/x86_64-linux-gnu/11/include/stddef.h
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/stddef.h \
+  /usr/local/cuda-13.1/targets/x86_64-linux/include/builtin_types.h \
+  /usr/local/cuda-13.1/targets/x86_64-linux/include/crt/host_defines.h \
+  /usr/local/cuda-13.1/targets/x86_64-linux/include/cuda_device_runtime_api.h \
+  /usr/local/cuda-13.1/targets/x86_64-linux/include/cuda_runtime_api.h \
+  /usr/local/cuda-13.1/targets/x86_64-linux/include/device_types.h \
+  /usr/local/cuda-13.1/targets/x86_64-linux/include/driver_types.h \
+  /usr/local/cuda-13.1/targets/x86_64-linux/include/surface_types.h \
+  /usr/local/cuda-13.1/targets/x86_64-linux/include/texture_types.h \
+  /usr/local/cuda-13.1/targets/x86_64-linux/include/vector_types.h

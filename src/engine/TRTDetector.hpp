@@ -101,6 +101,16 @@ public:
     std::vector<std::vector<Detection>> parseDetections(Slot* slot, float conf_threshold = 0.5f);
 
 private:
+    struct CallbackTask {
+        nvinfer1::IExecutionContext* ctx = nullptr;
+        Slot* slot = nullptr;
+        std::function<void(Slot*, bool)> cb;
+    };
+
+    void ensureCallbackWorker();
+    void stopCallbackWorker();
+    void callbackWorkerLoop();
+
     TRTDetector() = default;
     ~TRTDetector(); // 添加析构函数
 
@@ -122,15 +132,22 @@ private:
     std::atomic<int> ctx_created_{0};
     std::atomic<int> ctx_destroyed_{0};
     std::atomic<bool> shutting_down_{false};
-    size_t context_pool_limit_ = 2; // 硬上限，避免 context 失控创建导致显存耗尽
+    size_t context_pool_limit_ = 1; // 单 GPU 模式固定单 context
 
     // 异步推理回调 in-flight 计数器：shutdown 前必须等待归零
     std::atomic<int> inflight_callbacks_{0};
     std::mutex inflight_mutex_;
     std::condition_variable inflight_cv_;
 
+    std::mutex callback_mutex_;
+    std::condition_variable callback_cv_;
+    std::deque<CallbackTask> callback_queue_;
+    std::thread callback_worker_;
+    bool callback_worker_running_ = false;
+
     // 上下文池与并发控制
     std::mutex ctx_mutex_;
+    std::condition_variable ctx_cv_;
     std::deque<nvinfer1::IExecutionContext*> context_pool_;
     bool dynamic_shape_supported_ = false;
 

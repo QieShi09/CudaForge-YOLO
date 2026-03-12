@@ -10,6 +10,7 @@
 #include <QPushButton>
 #include <QLabel>
 #include <QProgressBar>
+#include <QSizeGrip>
 #include <QFileDialog>
 #include <QTabWidget>
 #include <QScrollArea>
@@ -32,7 +33,7 @@
 #include <type_traits>
 
 #include "src/core/MemoryManager.hpp"
-#include "src/core/DetectionQueue.hpp"
+#include "src/core/SlotQueue.hpp"
 #include "src/core/PipelineStats.hpp"
 #include "src/core/FrameQueue.hpp"
 #include "src/engine/TRTDetector.hpp"
@@ -55,10 +56,11 @@ static constexpr const char* APP  = "CudaForge-YOLO";
 AdvancedSettingsDialog::Settings AdvancedSettingsDialog::defaultSettings()
 {
     Settings s;
-    s.baseSlots      = 2;
+    s.baseSlots      = 4;
     s.workerCount    = 0;
+    s.inferenceStreams = 2;
     s.workerMaxBatch = 16;
-    s.contextPoolSize = 0;
+    s.contextPoolSize = 1;
     s.modelPath      = "/home/zzx/code/Qt/CudaForge-YOLO/src/engines/yolo26n.engine";
     s.classesPath    = "src/engines/class.txt";
     s.statsInterval  = 5;
@@ -72,8 +74,10 @@ AdvancedSettingsDialog::Settings AdvancedSettingsDialog::loadFromDisk()
     Settings s;
     s.baseSlots      = qs.value("baseSlots", def.baseSlots).toInt();
     s.workerCount    = qs.value("workerCount", def.workerCount).toInt();
+    s.inferenceStreams = qs.value("inferenceStreams", def.inferenceStreams).toInt();
     s.workerMaxBatch = qs.value("workerMaxBatch", def.workerMaxBatch).toInt();
-    s.contextPoolSize = qs.value("contextPoolSize", def.contextPoolSize).toInt();
+    (void)qs.value("contextPoolSize", def.contextPoolSize).toInt();
+    s.contextPoolSize = 1;
     s.modelPath      = qs.value("modelPath", def.modelPath).toString();
     s.classesPath    = qs.value("classesPath", def.classesPath).toString();
     s.statsInterval  = qs.value("statsInterval", def.statsInterval).toInt();
@@ -85,8 +89,9 @@ void AdvancedSettingsDialog::saveToDisk(const Settings& s)
     QSettings qs(ORG, APP);
     qs.setValue("baseSlots", s.baseSlots);
     qs.setValue("workerCount", s.workerCount);
+    qs.setValue("inferenceStreams", s.inferenceStreams);
     qs.setValue("workerMaxBatch", s.workerMaxBatch);
-    qs.setValue("contextPoolSize", s.contextPoolSize);
+    qs.setValue("contextPoolSize", 1);
     qs.setValue("modelPath", s.modelPath);
     qs.setValue("classesPath", s.classesPath);
     qs.setValue("statsInterval", s.statsInterval);
@@ -97,9 +102,13 @@ AdvancedSettingsDialog::AdvancedSettingsDialog(QWidget *parent)
     : QDialog(parent)
 {
     setObjectName("advancedSettingsDialog");
-    setWindowFlags((windowFlags() | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint) & ~Qt::WindowContextHelpButtonHint);
+    Qt::WindowFlags flags = windowFlags();
+    flags |= Qt::FramelessWindowHint;
+    flags &= ~Qt::WindowStaysOnTopHint;
+    flags &= ~Qt::WindowContextHelpButtonHint;
+    setWindowFlags(flags);
     setWindowTitle("Advanced Settings");
-    setMinimumSize(900, 600);
+    setMinimumSize(640, 420);
     resize(980, 680);
     buildUI();
 
@@ -309,6 +318,7 @@ void AdvancedSettingsDialog::buildUI()
 
     m_spinSlots       = req(static_cast<QSpinBox*>(nullptr), "m_spinSlots");
     m_spinWorkerCount = req(static_cast<QSpinBox*>(nullptr), "m_spinWorkerCount");
+    m_spinInferenceStreams = req(static_cast<QSpinBox*>(nullptr), "m_spinInferenceStreams");
     m_spinBatch       = req(static_cast<QSpinBox*>(nullptr), "m_spinBatch");
     m_spinContextPool = req(static_cast<QSpinBox*>(nullptr), "m_spinContextPool");
     m_spinStatsInterval = req(static_cast<QSpinBox*>(nullptr), "m_spinStatsInterval");
@@ -352,6 +362,18 @@ void AdvancedSettingsDialog::buildUI()
     m_spinLoadFps     = req(static_cast<QSpinBox*>(nullptr), "m_spinLoadFps");
     m_spinLoadDuration= req(static_cast<QSpinBox*>(nullptr), "m_spinLoadDuration");
 
+    // context 数与 stream 数绑定，不再单独开放 context 池设置
+    m_spinContextPool->setMinimum(1);
+    m_spinContextPool->setMaximum(1);
+    m_spinContextPool->setValue(1);
+    m_spinContextPool->setEnabled(false);
+    m_spinContextPool->setToolTip("Context count follows Parallel Infer");
+    m_spinInferenceStreams->setToolTip("Controls both CUDA streams and TRT contexts");
+    if (auto *ctxLabel = this->findChild<QLabel*>("txtCtxPoolParam")) {
+        ctxLabel->hide();
+    }
+    m_spinContextPool->hide();
+
     m_titleBar->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_titleLabel->setObjectName("customTitleLabel");
     m_btnCloseDialog->setObjectName("titleCloseButton");
@@ -378,6 +400,20 @@ void AdvancedSettingsDialog::buildUI()
     connect(m_btnCloseDialog, &QPushButton::clicked, this, &QDialog::reject);
     m_titleBar->installEventFilter(this);
     m_titleLabel->installEventFilter(this);
+
+    if (!m_resizeGrip) {
+        m_resizeGrip = new QSizeGrip(this);
+        m_resizeGrip->setFixedSize(14, 14);
+        m_resizeGrip->setToolTip("Drag to resize");
+        if (auto *bodyLayout = this->findChild<QVBoxLayout*>("verticalLayoutBody")) {
+            auto *gripRow = new QHBoxLayout();
+            gripRow->setContentsMargins(0, 0, 0, 0);
+            gripRow->setSpacing(0);
+            gripRow->addStretch();
+            gripRow->addWidget(m_resizeGrip, 0, Qt::AlignRight | Qt::AlignBottom);
+            bodyLayout->addLayout(gripRow);
+        }
+    }
 
     QString bigNum = "font-size:12px; font-weight:600; color:#334155;";
     m_lblDecodeFps->setStyleSheet(bigNum);
@@ -426,7 +462,7 @@ void AdvancedSettingsDialog::buildUI()
         cardSlotPool->setToolTip("MemoryManager 管理的 GPU 推理缓冲区槽位。\n每个 Slot 包含一组模型输入/输出 Tensor 的显存。");
     }
     if (auto *cardDetQueue = this->findChild<QWidget*>("cardDetQueue")) {
-        cardDetQueue->setToolTip("解码器推入、Worker 取出的待检测帧队列。Fill 越高说明 Worker 来不及处理。");
+        cardDetQueue->setToolTip("SlotQueue：解码器写入、Worker 取出的待检测批次队列。Fill 越高说明推理处理不及时。");
     }
     if (auto *cardThroughput = this->findChild<QWidget*>("cardThroughput")) {
         cardThroughput->setToolTip("各阶段每秒处理量。数值为最近采样窗口平均值。");
@@ -534,8 +570,9 @@ AdvancedSettingsDialog::Settings AdvancedSettingsDialog::getSettings() const
     Settings s;
     s.baseSlots      = m_spinSlots->value();
     s.workerCount    = m_spinWorkerCount->value();
+    s.inferenceStreams = m_spinInferenceStreams->value();
     s.workerMaxBatch = m_spinBatch->value();
-    s.contextPoolSize = m_spinContextPool->value();
+    s.contextPoolSize = 1;
     s.modelPath      = m_editModelPath->text();
     s.classesPath    = m_editClassesPath->text();
     s.statsInterval  = m_spinStatsInterval->value();
@@ -546,8 +583,9 @@ void AdvancedSettingsDialog::setSettings(const Settings& s)
 {
     m_spinSlots->setValue(s.baseSlots);
     m_spinWorkerCount->setValue(s.workerCount);
+    m_spinInferenceStreams->setValue(s.inferenceStreams);
     m_spinBatch->setValue(s.workerMaxBatch);
-    m_spinContextPool->setValue(s.contextPoolSize);
+    m_spinContextPool->setValue(1);
     m_editModelPath->setText(s.modelPath);
     m_editClassesPath->setText(s.classesPath);
     m_spinStatsInterval->setValue(s.statsInterval);
@@ -638,7 +676,7 @@ void AdvancedSettingsDialog::refreshDashboard()
             m_lblVramSlot->setText(QString("%1 MiB (alloc)").arg(slotMiB, 0, 'f', 1));
             m_lblVramCtx->setText(QString("%1 MiB (~%2 ctx)").arg(ctxMiB, 0, 'f', 1).arg(ctx_count));
             m_lblVramDecoder->setText(QString("%1 MiB (est)").arg(decMiB, 0, 'f', 1));
-            m_lblVramOther->setText(QString("%1 MiB (approx)").arg(otherMiB, 0, 'f', 1));
+            m_lblVramOther->setText(QString("%1 MiB (TRT/CUDA untracked)").arg(otherMiB, 0, 'f', 1));
             m_lblDecoderCount->setText(QString("%1 / %2 (max %3)")
                 .arg(VideoDecoder::hwDecoderCount())
                 .arg(VideoDecoder::swDecoderCount())
@@ -663,9 +701,9 @@ void AdvancedSettingsDialog::refreshDashboard()
         }
     }
 
-    // --- Detection Queue ---
+    // --- Slot Queue ---
     {
-        auto& dq = DetectionQueue::getInstance();
+        auto& dq = SlotQueue::getInstance();
         size_t sz  = dq.size();
         size_t cap = dq.capacity();
         if (cap > 0) {
@@ -749,7 +787,8 @@ void AdvancedSettingsDialog::refreshDashboard()
     double d2h_ms = per_item_ms(post_d2h_us, post_batches);
 
     double demux_cap = cap_fps(demux_ms, 1.0);
-    double decode_recv_cap = cap_fps(decode_recv_ms, 1.0);
+    double decode_total_ms = decode_send_ms + decode_recv_ms;
+    double decode_recv_cap = cap_fps(decode_total_ms, 1.0);
     double htod_cap = cap_fps(htod_ms, 1.0);
     double preproc_gpu_cap = cap_fps(preproc_gpu_ms, avg_gpu_batch);
     double infer_gpu_cap = cap_fps(infer_gpu_ms, avg_gpu_batch);
@@ -818,28 +857,39 @@ void AdvancedSettingsDialog::refreshDashboard()
         uint64_t w_total  = w_pop_empty + w_batches;
         double idle_pct   = (w_total > 0) ? 100.0 * w_pop_empty / w_total : 0.0;
         double avg_slot_ms = slot_wait_ms;
-        size_t dq_sz = DetectionQueue::getInstance().size();
-        size_t dq_cap = DetectionQueue::getInstance().capacity();
+        double input_fps = decode_fps;
+        double infer_ratio = (input_fps > 1e-6) ? (infer_fps / input_fps) : 1.0;
+        double dq_drop_ps = dropped / interval;
+        double max_batch_cfg = std::max(1.0, static_cast<double>(m_spinBatch ? m_spinBatch->value() : 1));
+        double batch_util = avg_batch / max_batch_cfg;
+        size_t dq_sz = SlotQueue::getInstance().size();
+        size_t dq_cap = SlotQueue::getInstance().capacity();
 
         QString analysis;
         if (decode_fps < 1.0 && infer_fps < 1.0) {
             analysis = "⏸ Idle — 无活跃通道 / No active channels";
-        } else if (idle_pct > 60.0) {
-            analysis = QString("🔴 DECODE-LIMITED / 解码瓶颈\n"
-                "Workers %1% 时间在等数据。推理能力 > 解码供给。\n"
-                "建议: 增加视频源、降低跳帧步长、或用压力测试验证推理上限。")
+        } else if (infer_ratio < 0.92 && (dq_drop_ps > 1.0 || dq_sz > dq_cap * 0.2 || batch_util < 0.45)) {
+            analysis = QString("🔴 INFERENCE-LIMITED / 推理并行不足\n"
+                "Input=%1 fps, Infer=%2 fps, Gap=%3 fps, AvgBatch=%4/%5。\n"
+                "建议: 保持 context 数与 streams 对齐，启用微批聚合并提高 batch 利用率。")
+                .arg(input_fps, 0, 'f', 1)
+                .arg(infer_fps, 0, 'f', 1)
+                .arg(std::max(0.0, input_fps - infer_fps), 0, 'f', 1)
+                .arg(avg_batch, 0, 'f', 1)
+                .arg(max_batch_cfg, 0, 'f', 0);
+        } else if (idle_pct > 65.0 && infer_ratio >= 0.92) {
+            analysis = QString("🟡 INPUT-LIMITED / 输入供给不足\n"
+                "Workers 空转 %1%%，当前输入速率本身偏低。\n"
+                "建议: 增加活跃通道或提高源输入速率。")
                 .arg(idle_pct, 0, 'f', 1);
-        } else if (dq_sz > dq_cap * 0.8) {
-            analysis = "🔴 INFERENCE-LIMITED / 推理瓶颈\n"
-                "DQ 接近满载，Workers 处理不过来。\n"
-                "建议: 增加 Worker 数量或增大 Slot 池。";
         } else if (avg_slot_ms > 5.0) {
             analysis = QString("🟡 SLOT-LIMITED / 显存槽瓶颈\n"
                 "Slot 等待 %1ms/batch。\n"
                 "建议: 增加 Base Slots。").arg(avg_slot_ms, 0, 'f', 1);
-        } else if (ctx_misses > ctx_hits * 0.1 && ctx_hits > 0) {
-            analysis = "🟡 CONTEXT-LIMITED / TRT上下文瓶颈\n"
-                "执行上下文争用频繁。建议重启检测让 pool 重新初始化。";
+        } else if (ctx_misses > 0 && ctx_idle == 0 && infer_ratio < 0.98) {
+            analysis = QString("🟡 CONTEXT-WAIT / 上下文等待\n"
+                "misses=%1，说明有批次在等空闲 context；当前更需要关注并行推理提交效率，而不是回退到 1 context。")
+                .arg(ctx_misses);
         } else {
             analysis = "🟢 BALANCED / 均衡\n管线各阶段匹配良好。";
         }
@@ -861,31 +911,6 @@ void AdvancedSettingsDialog::refreshDashboard()
         m_lblBottleneck->setText(analysis);
     }
 
-    qInfo().noquote() << QString(
-        "[PerfProbe] stage_ms demux=%1 decode_send=%2 decode_recv=%3 htod=%4 preproc_gpu=%5 infer_gpu=%6 d2h=%7 pop_wait=%8 slot_wait=%9 fq_wait=%10")
-        .arg(demux_ms, 0, 'f', 3)
-        .arg(decode_send_ms, 0, 'f', 3)
-        .arg(decode_recv_ms, 0, 'f', 3)
-        .arg(htod_ms, 0, 'f', 3)
-        .arg(preproc_gpu_ms, 0, 'f', 3)
-        .arg(infer_gpu_ms, 0, 'f', 3)
-        .arg(d2h_ms, 0, 'f', 3)
-        .arg(decode_pop_wait_ms, 0, 'f', 3)
-        .arg(slot_wait_ms, 0, 'f', 3)
-        .arg(fq_push_wait_ms, 0, 'f', 3);
-    qInfo().noquote() << QString(
-        "[PerfProbe] cap_fps demux=%1 decode=%2 htod=%3 preproc_gpu=%4 infer_gpu=%5 d2h=%6 pipeline=%7 | actual input=%8 infer=%9 display=%10")
-        .arg(demux_cap, 0, 'f', 1)
-        .arg(decode_recv_cap, 0, 'f', 1)
-        .arg(htod_cap, 0, 'f', 1)
-        .arg(preproc_gpu_cap, 0, 'f', 1)
-        .arg(infer_gpu_cap, 0, 'f', 1)
-        .arg(d2h_cap, 0, 'f', 1)
-        .arg(pipeline_cap, 0, 'f', 1)
-        .arg(decode_fps, 0, 'f', 1)
-        .arg(infer_fps, 0, 'f', 1)
-        .arg(display_fps, 0, 'f', 1);
-
     // 生成可复制的文本报告，方便一键复制到剪贴板
     {
         QStringList lines;
@@ -897,7 +922,7 @@ void AdvancedSettingsDialog::refreshDashboard()
         lines << QString("VRAM Decoder (est): %1").arg(m_lblVramDecoder->text());
         lines << QString("VRAM Other (est): %1").arg(m_lblVramOther->text());
         lines << QString("Slot Pool: %1").arg(m_lblSlotPool->text());
-        lines << QString("DetQueue: %1").arg(m_lblDetQueue->text());
+        lines << QString("SlotQueue: %1").arg(m_lblDetQueue->text());
         // FrameQueues: 简单列出 ch sizes
         // 若需更详细可扩展
         // TRT contexts / workers
@@ -909,7 +934,7 @@ void AdvancedSettingsDialog::refreshDashboard()
         lines << QString("  Infer:  %1").arg(m_lblInferFps->text());
         lines << QString("  Display: %1").arg(m_lblDisplayFps->text());
         lines << QString("  Detections: %1").arg(m_lblDetections->text());
-        lines << QString("  DQ Push / Dropped: %1 / %2").arg(m_lblDqPush->text()).arg(m_lblDqDrop->text());
+        lines << QString("  SlotQ Push / Dropped: %1 / %2").arg(m_lblDqPush->text()).arg(m_lblDqDrop->text());
         lines << "";
         lines << "Worker Efficiency:";
         lines << QString("  Idle: %1").arg(m_lblWorkerIdle->text());

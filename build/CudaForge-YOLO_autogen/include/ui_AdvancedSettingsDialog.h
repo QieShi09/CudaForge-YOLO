@@ -157,6 +157,8 @@ public:
     QSpinBox *m_spinSlots;
     QLabel *txtWorkers;
     QSpinBox *m_spinWorkerCount;
+    QLabel *txtStreams;
+    QSpinBox *m_spinInferenceStreams;
     QLabel *txtBatchParam;
     QSpinBox *m_spinBatch;
     QLabel *txtCtxPoolParam;
@@ -783,8 +785,8 @@ public:
         m_spinSlots = new QSpinBox(cardPipelineParams);
         m_spinSlots->setObjectName(QString::fromUtf8("m_spinSlots"));
         m_spinSlots->setMinimum(1);
-        m_spinSlots->setMaximum(16);
-        m_spinSlots->setValue(2);
+        m_spinSlots->setMaximum(256);
+        m_spinSlots->setValue(4);
 
         formPipelineParams->setWidget(0, QFormLayout::FieldRole, m_spinSlots);
 
@@ -801,23 +803,36 @@ public:
 
         formPipelineParams->setWidget(1, QFormLayout::FieldRole, m_spinWorkerCount);
 
+        txtStreams = new QLabel(cardPipelineParams);
+        txtStreams->setObjectName(QString::fromUtf8("txtStreams"));
+
+        formPipelineParams->setWidget(2, QFormLayout::LabelRole, txtStreams);
+
+        m_spinInferenceStreams = new QSpinBox(cardPipelineParams);
+        m_spinInferenceStreams->setObjectName(QString::fromUtf8("m_spinInferenceStreams"));
+        m_spinInferenceStreams->setMinimum(1);
+        m_spinInferenceStreams->setMaximum(8);
+        m_spinInferenceStreams->setValue(2);
+
+        formPipelineParams->setWidget(2, QFormLayout::FieldRole, m_spinInferenceStreams);
+
         txtBatchParam = new QLabel(cardPipelineParams);
         txtBatchParam->setObjectName(QString::fromUtf8("txtBatchParam"));
 
-        formPipelineParams->setWidget(2, QFormLayout::LabelRole, txtBatchParam);
+        formPipelineParams->setWidget(3, QFormLayout::LabelRole, txtBatchParam);
 
         m_spinBatch = new QSpinBox(cardPipelineParams);
         m_spinBatch->setObjectName(QString::fromUtf8("m_spinBatch"));
         m_spinBatch->setMinimum(1);
-        m_spinBatch->setMaximum(16);
+        m_spinBatch->setMaximum(32);
         m_spinBatch->setValue(16);
 
-        formPipelineParams->setWidget(2, QFormLayout::FieldRole, m_spinBatch);
+        formPipelineParams->setWidget(3, QFormLayout::FieldRole, m_spinBatch);
 
         txtCtxPoolParam = new QLabel(cardPipelineParams);
         txtCtxPoolParam->setObjectName(QString::fromUtf8("txtCtxPoolParam"));
 
-        formPipelineParams->setWidget(3, QFormLayout::LabelRole, txtCtxPoolParam);
+        formPipelineParams->setWidget(4, QFormLayout::LabelRole, txtCtxPoolParam);
 
         m_spinContextPool = new QSpinBox(cardPipelineParams);
         m_spinContextPool->setObjectName(QString::fromUtf8("m_spinContextPool"));
@@ -825,12 +840,12 @@ public:
         m_spinContextPool->setMaximum(8);
         m_spinContextPool->setValue(0);
 
-        formPipelineParams->setWidget(3, QFormLayout::FieldRole, m_spinContextPool);
+        formPipelineParams->setWidget(4, QFormLayout::FieldRole, m_spinContextPool);
 
         txtStats = new QLabel(cardPipelineParams);
         txtStats->setObjectName(QString::fromUtf8("txtStats"));
 
-        formPipelineParams->setWidget(4, QFormLayout::LabelRole, txtStats);
+        formPipelineParams->setWidget(5, QFormLayout::LabelRole, txtStats);
 
         m_spinStatsInterval = new QSpinBox(cardPipelineParams);
         m_spinStatsInterval->setObjectName(QString::fromUtf8("m_spinStatsInterval"));
@@ -838,7 +853,7 @@ public:
         m_spinStatsInterval->setMaximum(60);
         m_spinStatsInterval->setValue(5);
 
-        formPipelineParams->setWidget(4, QFormLayout::FieldRole, m_spinStatsInterval);
+        formPipelineParams->setWidget(5, QFormLayout::FieldRole, m_spinStatsInterval);
 
 
         vlCardParams->addLayout(formPipelineParams);
@@ -999,10 +1014,10 @@ public:
         txtDetections->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Detections / \346\243\200\346\265\213\347\233\256\346\240\207:", nullptr));
         txtDetections->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "rowTitle", nullptr)));
         m_lblDetections->setText(QCoreApplication::translate("AdvancedSettingsDialog", "0", nullptr));
-        txtDqPush->setText(QCoreApplication::translate("AdvancedSettingsDialog", "DQ Push / \346\216\250\345\205\245\351\200\237\347\216\207:", nullptr));
+        txtDqPush->setText(QCoreApplication::translate("AdvancedSettingsDialog", "SlotQ Push / \346\216\250\345\205\245\351\200\237\347\216\207:", nullptr));
         txtDqPush->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "rowTitle", nullptr)));
         m_lblDqPush->setText(QCoreApplication::translate("AdvancedSettingsDialog", "0", nullptr));
-        txtDqDrop->setText(QCoreApplication::translate("AdvancedSettingsDialog", "DQ Dropped / \344\270\242\345\270\247:", nullptr));
+        txtDqDrop->setText(QCoreApplication::translate("AdvancedSettingsDialog", "SlotQ Dropped / \344\270\242\345\270\247:", nullptr));
         txtDqDrop->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "rowTitle", nullptr)));
         m_lblDqDrop->setText(QCoreApplication::translate("AdvancedSettingsDialog", "0", nullptr));
         titleWorker->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Worker Efficiency / \346\216\250\347\220\206\347\272\277\347\250\213\346\225\210\347\216\207", nullptr));
@@ -1025,7 +1040,7 @@ public:
         txtCtx->setText(QCoreApplication::translate("AdvancedSettingsDialog", "TRT Ctx Pool / \344\270\212\344\270\213\346\226\207\346\261\240:", nullptr));
         txtCtx->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "rowTitle", nullptr)));
         m_lblCtxPool->setText(QCoreApplication::translate("AdvancedSettingsDialog", "--", nullptr));
-        titleDetQueue->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Detection Queue / \346\243\200\346\265\213\351\230\237\345\210\227", nullptr));
+        titleDetQueue->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Slot Queue / \346\247\275\351\230\237\345\210\227", nullptr));
         titleDetQueue->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "cardTitle", nullptr)));
         txtDetFill->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Fill / \345\241\253\345\205\205\347\216\207:", nullptr));
         txtDetFill->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "rowTitle", nullptr)));
@@ -1055,11 +1070,13 @@ public:
         tabsMain->setTabText(tabsMain->indexOf(tabDashboard), QCoreApplication::translate("AdvancedSettingsDialog", "Dashboard / \344\273\252\350\241\250\347\233\230", nullptr));
         titleParams->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Pipeline Parameters / \347\256\241\347\272\277\345\217\202\346\225\260", nullptr));
         titleParams->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "cardTitle", nullptr)));
-        txtSlots->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Base Slots / \345\237\272\347\241\200\346\247\275\344\275\215:", nullptr));
+        txtSlots->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Fixed Slots / \345\233\272\345\256\232\346\247\275\344\275\215:", nullptr));
         txtSlots->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "rowTitle", nullptr)));
         txtWorkers->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Worker Count / \346\216\250\347\220\206\347\272\277\347\250\213:", nullptr));
         txtWorkers->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "rowTitle", nullptr)));
         m_spinWorkerCount->setSpecialValueText(QCoreApplication::translate("AdvancedSettingsDialog", "Auto / \350\207\252\345\212\250", nullptr));
+        txtStreams->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Parallel Infer / \345\271\266\350\241\214\346\216\250\347\220\206\346\225\260:", nullptr));
+        txtStreams->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "rowTitle", nullptr)));
         txtBatchParam->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Worker Max Batch / \346\234\200\345\244\247\346\211\271\351\207\217:", nullptr));
         txtBatchParam->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "rowTitle", nullptr)));
         txtCtxPoolParam->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Context Pool / \344\270\212\344\270\213\346\226\207\346\261\240:", nullptr));
