@@ -32,12 +32,14 @@
 #include <cmath>
 #include <type_traits>
 
-#include "src/core/MemoryManager.hpp"
-#include "src/core/SlotQueue.hpp"
+#include "src/core/SlotPool.hpp"
+#include "src/core/InputFrameArenaStore.hpp"
+#include "src/core/TensorArenaManager.hpp"
 #include "src/core/PipelineStats.hpp"
 #include "src/core/FrameQueue.hpp"
 #include "src/engine/TRTDetector.hpp"
 #include "src/video/VideoDecoder.hpp"
+#include "src/video/DisplayManager.hpp"
 
 #include <cuda_runtime.h>
 
@@ -57,7 +59,8 @@ AdvancedSettingsDialog::Settings AdvancedSettingsDialog::defaultSettings()
 {
     Settings s;
     s.baseSlots      = 4;
-    s.workerCount    = 0;
+    s.inputArenaFrames = 200;
+    s.workerCount    = 2;
     s.inferenceStreams = 2;
     s.workerMaxBatch = 16;
     s.contextPoolSize = 1;
@@ -73,8 +76,9 @@ AdvancedSettingsDialog::Settings AdvancedSettingsDialog::loadFromDisk()
     Settings def = defaultSettings();
     Settings s;
     s.baseSlots      = qs.value("baseSlots", def.baseSlots).toInt();
-    s.workerCount    = qs.value("workerCount", def.workerCount).toInt();
+    s.inputArenaFrames = qs.value("inputArenaFrames", def.inputArenaFrames).toInt();
     s.inferenceStreams = qs.value("inferenceStreams", def.inferenceStreams).toInt();
+    s.workerCount    = std::max(1, s.inferenceStreams);
     s.workerMaxBatch = qs.value("workerMaxBatch", def.workerMaxBatch).toInt();
     (void)qs.value("contextPoolSize", def.contextPoolSize).toInt();
     s.contextPoolSize = 1;
@@ -88,8 +92,9 @@ void AdvancedSettingsDialog::saveToDisk(const Settings& s)
 {
     QSettings qs(ORG, APP);
     qs.setValue("baseSlots", s.baseSlots);
-    qs.setValue("workerCount", s.workerCount);
-    qs.setValue("inferenceStreams", s.inferenceStreams);
+    qs.setValue("inputArenaFrames", s.inputArenaFrames);
+    qs.setValue("workerCount", std::max(1, s.inferenceStreams));
+    qs.setValue("inferenceStreams", std::max(1, s.inferenceStreams));
     qs.setValue("workerMaxBatch", s.workerMaxBatch);
     qs.setValue("contextPoolSize", 1);
     qs.setValue("modelPath", s.modelPath);
@@ -336,6 +341,8 @@ void AdvancedSettingsDialog::buildUI()
     m_lblVramCtx      = req(static_cast<QLabel*>(nullptr), "m_lblVramCtx");
     m_lblVramDecoder  = req(static_cast<QLabel*>(nullptr), "m_lblVramDecoder");
     m_lblDecoderCount = req(static_cast<QLabel*>(nullptr), "m_lblDecoderCount");
+    m_lblInputArena   = req(static_cast<QLabel*>(nullptr), "m_lblInputArena");
+    m_lblOutputArena  = req(static_cast<QLabel*>(nullptr), "m_lblOutputArena");
     m_lblSlotPool     = req(static_cast<QLabel*>(nullptr), "m_lblSlotPool");
     m_barSlotPool     = req(static_cast<QProgressBar*>(nullptr), "m_barSlotPool");
     m_lblDetQueue     = req(static_cast<QLabel*>(nullptr), "m_lblDetQueue");
@@ -362,17 +369,47 @@ void AdvancedSettingsDialog::buildUI()
     m_spinLoadFps     = req(static_cast<QSpinBox*>(nullptr), "m_spinLoadFps");
     m_spinLoadDuration= req(static_cast<QSpinBox*>(nullptr), "m_spinLoadDuration");
 
-    // context 数与 stream 数绑定，不再单独开放 context 池设置
+    // 并行度参数统一：Worker 数与推理并行数绑定，不再单独开放 Worker Count
+    m_spinWorkerCount->setMinimum(1);
+    m_spinWorkerCount->setMaximum(1);
+    m_spinWorkerCount->setValue(1);
+    m_spinWorkerCount->setEnabled(false);
+    m_spinWorkerCount->setToolTip("Worker count follows Parallel Infer");
+    if (auto *workerLabel = this->findChild<QLabel*>("txtWorkers")) {
+        workerLabel->hide();
+    }
+    m_spinWorkerCount->hide();
+
+    // 将该参数用于 Input Arena 帧数
+    m_spinSlots->setMinimum(16);
+    m_spinSlots->setMaximum(2000);
+    m_spinSlots->setSingleStep(16);
+    m_spinSlots->setToolTip("Input arena frames");
+
+    // context 数固定为 1（不再使用 detector context pool）
     m_spinContextPool->setMinimum(1);
     m_spinContextPool->setMaximum(1);
     m_spinContextPool->setValue(1);
     m_spinContextPool->setEnabled(false);
-    m_spinContextPool->setToolTip("Context count follows Parallel Infer");
-    m_spinInferenceStreams->setToolTip("Controls both CUDA streams and TRT contexts");
+    m_spinContextPool->setToolTip("Context pool removed; workers own dedicated contexts");
+    m_spinInferenceStreams->setToolTip("Parallel infer workers (1 worker = 1 stream + 1 TRT context)");
     if (auto *ctxLabel = this->findChild<QLabel*>("txtCtxPoolParam")) {
         ctxLabel->hide();
     }
     m_spinContextPool->hide();
+    if (auto *ctxRowTitle = this->findChild<QLabel*>("txtCtx")) {
+        ctxRowTitle->hide();
+    }
+    m_lblCtxPool->hide();
+    if (auto *titleDetQueue = this->findChild<QLabel*>("titleDetQueue")) {
+        titleDetQueue->setText("Input Ready Queue / 输入就绪队列");
+    }
+    if (auto *txtDqPush = this->findChild<QLabel*>("txtDqPush")) {
+        txtDqPush->setText("Input Push / 入队速率:");
+    }
+    if (auto *txtDqDrop = this->findChild<QLabel*>("txtDqDrop")) {
+        txtDqDrop->setText("Input Dropped / 丢帧:");
+    }
 
     m_titleBar->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_titleLabel->setObjectName("customTitleLabel");
@@ -459,10 +496,10 @@ void AdvancedSettingsDialog::buildUI()
         cardVram->setToolTip("显存占用的粗略拆分：Slot、Context、Decoder 估算与其他占用。\n注意：这是估算值，仅用于定位大头。");
     }
     if (auto *cardSlotPool = this->findChild<QWidget*>("cardSlotPool")) {
-        cardSlotPool->setToolTip("MemoryManager 管理的 GPU 推理缓冲区槽位。\n每个 Slot 包含一组模型输入/输出 Tensor 的显存。");
+        cardSlotPool->setToolTip("SlotPool 管理的推理对象池。每个 Slot 对应一次批处理任务的元数据容器。\nActive 越高表示并发推理更繁忙。");
     }
     if (auto *cardDetQueue = this->findChild<QWidget*>("cardDetQueue")) {
-        cardDetQueue->setToolTip("SlotQueue：解码器写入、Worker 取出的待检测批次队列。Fill 越高说明推理处理不及时。");
+        cardDetQueue->setToolTip("InputFrameArenaStore 就绪帧队列：解码上传成功后进入 Ready，Worker 取走后转 Inflight。\nFill 越高说明输入积压。 ");
     }
     if (auto *cardThroughput = this->findChild<QWidget*>("cardThroughput")) {
         cardThroughput->setToolTip("各阶段每秒处理量。数值为最近采样窗口平均值。");
@@ -568,9 +605,10 @@ void AdvancedSettingsDialog::buildUI()
 AdvancedSettingsDialog::Settings AdvancedSettingsDialog::getSettings() const
 {
     Settings s;
-    s.baseSlots      = m_spinSlots->value();
-    s.workerCount    = m_spinWorkerCount->value();
-    s.inferenceStreams = m_spinInferenceStreams->value();
+    s.baseSlots      = 4;
+    s.inputArenaFrames = m_spinSlots->value();
+    s.inferenceStreams = std::max(1, m_spinInferenceStreams->value());
+    s.workerCount    = s.inferenceStreams;
     s.workerMaxBatch = m_spinBatch->value();
     s.contextPoolSize = 1;
     s.modelPath      = m_editModelPath->text();
@@ -581,9 +619,10 @@ AdvancedSettingsDialog::Settings AdvancedSettingsDialog::getSettings() const
 
 void AdvancedSettingsDialog::setSettings(const Settings& s)
 {
-    m_spinSlots->setValue(s.baseSlots);
-    m_spinWorkerCount->setValue(s.workerCount);
-    m_spinInferenceStreams->setValue(s.inferenceStreams);
+    m_spinSlots->setValue(std::max(16, s.inputArenaFrames));
+    int parallel_workers = std::max(1, s.inferenceStreams);
+    m_spinInferenceStreams->setValue(parallel_workers);
+    m_spinWorkerCount->setValue(parallel_workers);
     m_spinBatch->setValue(s.workerMaxBatch);
     m_spinContextPool->setValue(1);
     m_editModelPath->setText(s.modelPath);
@@ -653,10 +692,14 @@ void AdvancedSettingsDialog::refreshDashboard()
     // --- VRAM Breakdown (estimate) ---
     {
         const double mib = 1024.0 * 1024.0;
-        size_t slot_bytes = MemoryManager::getInstance().totalSlotBytesAllocated();
+        auto inArena = TensorArenaManager::getInstance().inputStats();
+        auto outArena = TensorArenaManager::getInstance().outputStats();
+        size_t slot_bytes = inArena.total_bytes + outArena.total_bytes;
         int ctx_count = TRTDetector::getInstance().getContextTotalCount();
         size_t ctx_bytes = static_cast<size_t>(ctx_count) * 500 * 1024 * 1024; // 约 500 MiB/ctx
         size_t decoder_bytes = VideoDecoder::totalDecoderVramBytes();
+        size_t decode_frame_bytes = VideoDecoder::totalStandaloneFrameVramBytes();
+        size_t display_bytes = DisplayWorker::totalDisplayVramBytes();
 
         if (!has_gpu_mem || total_bytes == 0) {
             m_lblVramSlot->setText("--");
@@ -667,16 +710,25 @@ void AdvancedSettingsDialog::refreshDashboard()
         } else {
             double slotMiB = slot_bytes / mib;
             double ctxMiB = ctx_bytes / mib;
-            double decMiB = decoder_bytes / mib;
+            double decCtxMiB = decoder_bytes / mib;
+            double decFrameMiB = decode_frame_bytes / mib;
+            double displayMiB = display_bytes / mib;
+            double knownMiB = 0.0;
+            size_t known = slot_bytes + ctx_bytes + decoder_bytes + decode_frame_bytes + display_bytes;
+            knownMiB = static_cast<double>(known) / mib;
             double otherMiB = 0.0;
-            size_t known = slot_bytes + ctx_bytes + decoder_bytes;
             if (used_bytes > known) {
                 otherMiB = (used_bytes - known) / mib;
             }
-            m_lblVramSlot->setText(QString("%1 MiB (alloc)").arg(slotMiB, 0, 'f', 1));
+            m_lblVramSlot->setText(QString("%1 MiB (input+output arenas)").arg(slotMiB, 0, 'f', 1));
             m_lblVramCtx->setText(QString("%1 MiB (~%2 ctx)").arg(ctxMiB, 0, 'f', 1).arg(ctx_count));
-            m_lblVramDecoder->setText(QString("%1 MiB (est)").arg(decMiB, 0, 'f', 1));
-            m_lblVramOther->setText(QString("%1 MiB (TRT/CUDA untracked)").arg(otherMiB, 0, 'f', 1));
+            m_lblVramDecoder->setText(QString("%1 MiB (ctx est) + %2 MiB (frame copy) + %3 MiB (display)")
+                                      .arg(decCtxMiB, 0, 'f', 1)
+                                      .arg(decFrameMiB, 0, 'f', 1)
+                                      .arg(displayMiB, 0, 'f', 1));
+            m_lblVramOther->setText(QString("%1 MiB (TRT/CUDA untracked, known=%2 MiB)")
+                                    .arg(otherMiB, 0, 'f', 1)
+                                    .arg(knownMiB, 0, 'f', 1));
             m_lblDecoderCount->setText(QString("%1 / %2 (max %3)")
                 .arg(VideoDecoder::hwDecoderCount())
                 .arg(VideoDecoder::swDecoderCount())
@@ -684,32 +736,51 @@ void AdvancedSettingsDialog::refreshDashboard()
         }
     }
 
+    // --- GPU Arenas ---
+    {
+        auto inputStats = TensorArenaManager::getInstance().inputStats();
+        auto outputStats = TensorArenaManager::getInstance().outputStats();
+
+        double mib = 1024.0 * 1024.0;
+        QString inputText = QString("%1 / %2 MiB (%3% frag)")
+            .arg(inputStats.used_bytes / mib, 0, 'f', 1)
+            .arg(inputStats.total_bytes / mib, 0, 'f', 1)
+            .arg(inputStats.fragmentation_ratio * 100.0, 0, 'f', 1);
+        QString outputText = QString("%1 / %2 MiB (%3% frag)")
+            .arg(outputStats.used_bytes / mib, 0, 'f', 1)
+            .arg(outputStats.total_bytes / mib, 0, 'f', 1)
+            .arg(outputStats.fragmentation_ratio * 100.0, 0, 'f', 1);
+        m_lblInputArena->setText(inputText);
+        m_lblOutputArena->setText(outputText);
+    }
+
     // --- Slot Pool ---
     {
-        auto& mm = MemoryManager::getInstance();
-        int avail = mm.availableSlots();
-        int total = mm.totalSlots();
-        int peak  = mm.peakSlotsUsed();
+        int avail = static_cast<int>(SlotPool::getInstance().freeSlots());
+        int total = static_cast<int>(SlotPool::getInstance().totalSlots());
+        int active = static_cast<int>(SlotPool::getInstance().activeSlots());
         if (total > 0) {
-            int used = total - avail;
-            int pct = 100 * used / total;
+            int pct = 100 * active / total;
             m_barSlotPool->setValue(pct);
-            m_lblSlotPool->setText(QString("Used %1 / %2  (Free %3, Peak %4)").arg(used).arg(total).arg(avail).arg(peak));
+            m_lblSlotPool->setText(QString("Active %1 / %2  (Free %3)").arg(active).arg(total).arg(avail));
         } else {
             m_barSlotPool->setValue(0);
             m_lblSlotPool->setText("Not initialized");
         }
     }
 
-    // --- Slot Queue ---
+    // --- Input Ready Queue ---
     {
-        auto& dq = SlotQueue::getInstance();
-        size_t sz  = dq.size();
-        size_t cap = dq.capacity();
+        auto storeStats = InputFrameArenaStore::getInstance().getStats();
+        size_t sz  = storeStats.ready_frames;
+        size_t cap = storeStats.max_ready_frames;
         if (cap > 0) {
             int pct = static_cast<int>(100 * sz / cap);
             m_barDetQueue->setValue(pct);
-            m_lblDetQueue->setText(QString("%1 / %2").arg(sz).arg(cap));
+            m_lblDetQueue->setText(QString("Ready %1 / %2  (Inflight %3, Dropped %4)")
+                                       .arg(sz).arg(cap)
+                                       .arg(storeStats.inflight_frames)
+                                       .arg(storeStats.dropped_frames));
         } else {
             m_barDetQueue->setValue(0);
             m_lblDetQueue->setText("Not initialized");
@@ -747,11 +818,6 @@ void AdvancedSettingsDialog::refreshDashboard()
     uint64_t post_d2h_us = ps.postprocess_d2h_us.exchange(0, std::memory_order_relaxed);
     uint64_t post_batches = ps.postprocess_batches.exchange(0, std::memory_order_relaxed);
     uint64_t post_frames = ps.postprocess_frames.exchange(0, std::memory_order_relaxed);
-
-    // TRT context pool
-    uint64_t ctx_hits   = ps.ctx_pool_hits.exchange(0, std::memory_order_relaxed);
-    uint64_t ctx_misses = ps.ctx_pool_misses.exchange(0, std::memory_order_relaxed);
-    int      ctx_idle   = ps.ctx_pool_size.load(std::memory_order_relaxed);
 
     double interval = m_dashTimer->interval() / 1000.0;
     if (interval <= 0) interval = 2.0;
@@ -842,14 +908,10 @@ void AdvancedSettingsDialog::refreshDashboard()
         double avg_preproc_ms = (w_batches > 0) ? (w_preproc_us / 1000.0) / w_batches : 0.0;
         m_lblPreprocTime->setText(QString("%1 ms avg/batch").arg(avg_preproc_ms, 0, 'f', 2));
 
-        int peak = MemoryManager::getInstance().peakSlotsUsed();
-        int total = MemoryManager::getInstance().totalSlots();
-        m_lblPeakSlots->setText(QString("%1 / %2").arg(peak).arg(total));
+        size_t activeSlots = SlotPool::getInstance().activeSlots();
+        size_t totalSlots = SlotPool::getInstance().totalSlots();
+        m_lblPeakSlots->setText(QString("%1 / %2").arg(activeSlots).arg(totalSlots));
 
-        uint64_t ctx_total = ctx_hits + ctx_misses;
-        double hit_pct = (ctx_total > 0) ? 100.0 * ctx_hits / ctx_total : 100.0;
-        m_lblCtxPool->setText(QString("%1 idle, hits: %2, misses: %3 (%4% hit)")
-            .arg(ctx_idle).arg(ctx_hits).arg(ctx_misses).arg(hit_pct, 0, 'f', 1));
     }
 
     // --- Bottleneck Analysis ---
@@ -862,8 +924,9 @@ void AdvancedSettingsDialog::refreshDashboard()
         double dq_drop_ps = dropped / interval;
         double max_batch_cfg = std::max(1.0, static_cast<double>(m_spinBatch ? m_spinBatch->value() : 1));
         double batch_util = avg_batch / max_batch_cfg;
-        size_t dq_sz = SlotQueue::getInstance().size();
-        size_t dq_cap = SlotQueue::getInstance().capacity();
+        auto storeStats = InputFrameArenaStore::getInstance().getStats();
+        size_t dq_sz = storeStats.ready_frames;
+        size_t dq_cap = storeStats.max_ready_frames;
 
         QString analysis;
         if (decode_fps < 1.0 && infer_fps < 1.0) {
@@ -871,7 +934,7 @@ void AdvancedSettingsDialog::refreshDashboard()
         } else if (infer_ratio < 0.92 && (dq_drop_ps > 1.0 || dq_sz > dq_cap * 0.2 || batch_util < 0.45)) {
             analysis = QString("🔴 INFERENCE-LIMITED / 推理并行不足\n"
                 "Input=%1 fps, Infer=%2 fps, Gap=%3 fps, AvgBatch=%4/%5。\n"
-                "建议: 保持 context 数与 streams 对齐，启用微批聚合并提高 batch 利用率。")
+                "建议: 提高并行 Worker 或提升微批聚合利用率。")
                 .arg(input_fps, 0, 'f', 1)
                 .arg(infer_fps, 0, 'f', 1)
                 .arg(std::max(0.0, input_fps - infer_fps), 0, 'f', 1)
@@ -885,29 +948,13 @@ void AdvancedSettingsDialog::refreshDashboard()
         } else if (avg_slot_ms > 5.0) {
             analysis = QString("🟡 SLOT-LIMITED / 显存槽瓶颈\n"
                 "Slot 等待 %1ms/batch。\n"
-                "建议: 增加 Base Slots。").arg(avg_slot_ms, 0, 'f', 1);
-        } else if (ctx_misses > 0 && ctx_idle == 0 && infer_ratio < 0.98) {
-            analysis = QString("🟡 CONTEXT-WAIT / 上下文等待\n"
-                "misses=%1，说明有批次在等空闲 context；当前更需要关注并行推理提交效率，而不是回退到 1 context。")
-                .arg(ctx_misses);
+                "建议: 增加 SlotPool 数量或降低并行/批量。").arg(avg_slot_ms, 0, 'f', 1);
         } else {
             analysis = "🟢 BALANCED / 均衡\n管线各阶段匹配良好。";
         }
 
-        if (pipeline_cap > 0.0) {
-            analysis += QString("\n\nEst. stage cap FPS:\n"
-                                "demux %1 | decode %2 | HtoD %3\n"
-                                "preprocGPU %4 | inferGPU %5 | DtoH %6\n"
-                                "Pipeline cap ≈ %7 fps (current bottleneck: %8)")
-                .arg(demux_cap, 0, 'f', 1)
-                .arg(decode_recv_cap, 0, 'f', 1)
-                .arg(htod_cap, 0, 'f', 1)
-                .arg(preproc_gpu_cap, 0, 'f', 1)
-                .arg(infer_gpu_cap, 0, 'f', 1)
-                .arg(d2h_cap, 0, 'f', 1)
-                .arg(pipeline_cap, 0, 'f', 1)
-                .arg(bottleneck_stage);
-        }
+        (void)pipeline_cap;
+        (void)bottleneck_stage;
         m_lblBottleneck->setText(analysis);
     }
 
@@ -917,16 +964,14 @@ void AdvancedSettingsDialog::refreshDashboard()
         lines << "Pipeline Diagnostic Report";
         lines << "--------------------------";
         lines << QString("GPU Memory: %1").arg(m_lblGpuMem->text());
-        lines << QString("VRAM Slot (est): %1").arg(m_lblVramSlot->text());
+        lines << QString("VRAM Tensor Arenas (est): %1").arg(m_lblVramSlot->text());
         lines << QString("VRAM Context (est): %1").arg(m_lblVramCtx->text());
         lines << QString("VRAM Decoder (est): %1").arg(m_lblVramDecoder->text());
         lines << QString("VRAM Other (est): %1").arg(m_lblVramOther->text());
         lines << QString("Slot Pool: %1").arg(m_lblSlotPool->text());
-        lines << QString("SlotQueue: %1").arg(m_lblDetQueue->text());
+        lines << QString("Input ReadyQ: %1").arg(m_lblDetQueue->text());
         // FrameQueues: 简单列出 ch sizes
         // 若需更详细可扩展
-        // TRT contexts / workers
-        lines << QString("TRT Ctx Pool: %1").arg(m_lblCtxPool->text());
         lines << QString("Workers / Infer: %1, %2").arg(m_lblInferFps->text()).arg(m_lblBatchUtil->text());
         lines << "";
         lines << "Throughput:";
@@ -934,7 +979,7 @@ void AdvancedSettingsDialog::refreshDashboard()
         lines << QString("  Infer:  %1").arg(m_lblInferFps->text());
         lines << QString("  Display: %1").arg(m_lblDisplayFps->text());
         lines << QString("  Detections: %1").arg(m_lblDetections->text());
-        lines << QString("  SlotQ Push / Dropped: %1 / %2").arg(m_lblDqPush->text()).arg(m_lblDqDrop->text());
+        lines << QString("  Input Push / Dropped: %1 / %2").arg(m_lblDqPush->text()).arg(m_lblDqDrop->text());
         lines << "";
         lines << "Worker Efficiency:";
         lines << QString("  Idle: %1").arg(m_lblWorkerIdle->text());
@@ -994,7 +1039,6 @@ void AdvancedSettingsDialog::runLoadTest()
     Q_EMIT loadTestStartRequested(useRealDecode, numChannels, targetFps, layoutMode);
     m_lblLoadTest->setText("⏳ Preparing real decode...");
 
-    MemoryManager::getInstance().resetPeakSlots();
     PipelineStats::getInstance().resetAll();
 
     std::thread([this, numChannels, targetFps, durationSec]() {

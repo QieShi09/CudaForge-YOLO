@@ -5,12 +5,12 @@
 #include <vector>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <QImage>
 #include <QDebug>
 #include <cuda_runtime.h>
 #include <cstdlib>
-#include "../core/SlotQueue.hpp"
-#include "../core/MemoryManager.hpp"
+#include "../core/InputFrameArenaStore.hpp"
 #include "../engine/TRTDetector.hpp"
 #include "../kernels/CudaImageProc.cuh"
 #include "../core/PipelineStats.hpp"
@@ -21,17 +21,41 @@ extern "C" {
 #include <libavutil/imgutils.h>
 }
 
+namespace {
+struct CudaBufMeta {
+    size_t bytes = 0;
+};
+}
+
 // CUDA 缓冲区释放回调，供 AVBufferRef 引用计数归零时调用
-static void cuda_buf_free(void* /*opaque*/, uint8_t* data) {
+static void cuda_buf_free(void* opaque, uint8_t* data) {
+    CudaBufMeta* meta = static_cast<CudaBufMeta*>(opaque);
+    if (meta) {
+        VideoDecoder::registerStandaloneFrameFree(meta->bytes);
+        delete meta;
+    }
     cudaFree(data);
 }
 
 std::atomic<size_t> VideoDecoder::s_total_decoder_vram_bytes{0};
+std::atomic<size_t> VideoDecoder::s_total_standalone_frame_vram_bytes{0};
 std::atomic<int> VideoDecoder::s_hw_decoder_count{0};
 std::atomic<int> VideoDecoder::s_sw_decoder_count{0};
 
 size_t VideoDecoder::totalDecoderVramBytes() {
     return s_total_decoder_vram_bytes.load(std::memory_order_relaxed);
+}
+
+size_t VideoDecoder::totalStandaloneFrameVramBytes() {
+    return s_total_standalone_frame_vram_bytes.load(std::memory_order_relaxed);
+}
+
+void VideoDecoder::registerStandaloneFrameAlloc(size_t bytes) {
+    s_total_standalone_frame_vram_bytes.fetch_add(bytes, std::memory_order_relaxed);
+}
+
+void VideoDecoder::registerStandaloneFrameFree(size_t bytes) {
+    s_total_standalone_frame_vram_bytes.fetch_sub(bytes, std::memory_order_relaxed);
 }
 
 int VideoDecoder::hwDecoderCount() {
@@ -606,16 +630,87 @@ void VideoDecoder::startDecoding()
                     continue;
                 }
 
-                // 纯 HW 模式：非 CUDA 帧不应出现，直接丢弃
+                // 兼容 SW 解码输出：非 CUDA 帧转成 CUDA NV12，避免直接丢帧
                 if (frame->format != AV_PIX_FMT_CUDA) {
-                    fprintf(stderr, "[VideoDecoder] ch=%d: unexpected non-CUDA frame (fmt=%d), dropping.\n",
-                            channel_id_, frame->format);
+                    int fw = frame->width;
+                    int fh = frame->height;
+                    int64_t fpts = frame->pts;
+                    size_t nv12_size = static_cast<size_t>(fw) * fh * 3 / 2;
+                    uint8_t* d_buf = nullptr;
+                    cudaError_t alloc_err = cudaMalloc(&d_buf, nv12_size);
+                    if (alloc_err != cudaSuccess) {
+                        fprintf(stderr, "[VideoDecoder] ch=%d: cudaMalloc for SW frame (%zu B) failed: %s\n",
+                                channel_id_, nv12_size, cudaGetErrorString(alloc_err));
+                        av_frame_unref(frame);
+                        continue;
+                    }
+
+                    bool converted = false;
+                    if (frame->format == AV_PIX_FMT_NV12 && frame->data[0] && frame->data[1]) {
+                        cudaError_t e1 = cudaMemcpy2D(d_buf, fw,
+                                                      frame->data[0], frame->linesize[0],
+                                                      fw, fh, cudaMemcpyHostToDevice);
+                        cudaError_t e2 = cudaMemcpy2D(d_buf + static_cast<size_t>(fw) * fh, fw,
+                                                      frame->data[1], frame->linesize[1],
+                                                      fw, fh / 2, cudaMemcpyHostToDevice);
+                        converted = (e1 == cudaSuccess && e2 == cudaSuccess);
+                    } else if (frame->format == AV_PIX_FMT_YUV420P && frame->data[0] && frame->data[1] && frame->data[2]) {
+                        std::vector<uint8_t> nv12_host(nv12_size);
+                        uint8_t* y_plane = nv12_host.data();
+                        uint8_t* uv_plane = y_plane + static_cast<size_t>(fw) * fh;
+
+                        for (int y = 0; y < fh; ++y) {
+                            std::memcpy(y_plane + static_cast<size_t>(y) * fw,
+                                        frame->data[0] + static_cast<size_t>(y) * frame->linesize[0],
+                                        static_cast<size_t>(fw));
+                        }
+                        for (int y = 0; y < fh / 2; ++y) {
+                            const uint8_t* src_u = frame->data[1] + static_cast<size_t>(y) * frame->linesize[1];
+                            const uint8_t* src_v = frame->data[2] + static_cast<size_t>(y) * frame->linesize[2];
+                            uint8_t* dst_uv = uv_plane + static_cast<size_t>(y) * fw;
+                            for (int x = 0; x < fw / 2; ++x) {
+                                dst_uv[2 * x] = src_u[x];
+                                dst_uv[2 * x + 1] = src_v[x];
+                            }
+                        }
+
+                        cudaError_t e = cudaMemcpy(d_buf, nv12_host.data(), nv12_size, cudaMemcpyHostToDevice);
+                        converted = (e == cudaSuccess);
+                    }
+
+                    if (!converted) {
+                        fprintf(stderr, "[VideoDecoder] ch=%d: non-CUDA frame convert failed (fmt=%d), dropping.\n",
+                                channel_id_, frame->format);
+                        cudaFree(d_buf);
+                        av_frame_unref(frame);
+                        continue;
+                    }
+
                     av_frame_unref(frame);
-                    continue;
+                    frame->format = AV_PIX_FMT_CUDA;
+                    frame->width = fw;
+                    frame->height = fh;
+                    frame->pts = fpts;
+
+                    CudaBufMeta* meta = new CudaBufMeta();
+                    meta->bytes = nv12_size;
+                    frame->buf[0] = av_buffer_create(d_buf, static_cast<int>(nv12_size),
+                                                     cuda_buf_free, meta, 0);
+                    if (!frame->buf[0]) {
+                        delete meta;
+                        cudaFree(d_buf);
+                        av_frame_unref(frame);
+                        continue;
+                    }
+                    registerStandaloneFrameAlloc(nv12_size);
+                    frame->data[0] = d_buf;
+                    frame->data[1] = d_buf + static_cast<size_t>(fw) * fh;
+                    frame->linesize[0] = fw;
+                    frame->linesize[1] = fw;
                 }
 
                 // === [关键修复] 立即将 NVDEC surface 拷贝到独立 CUDA 缓冲 ===
-                // 问题：av_frame_clone 引用 NVDEC surface，FrameQueue/SlotQueue 持有时间过长
+                // 问题：av_frame_clone 引用 NVDEC surface，FrameQueue/输入队列持有时间过长
                 //       导致 "No decoder surfaces left" → decode 失败级联崩溃
                 // 方案：D2D memcpy 后立即 av_frame_unref，NVDEC surface 瞬间归还
                 {
@@ -650,8 +745,17 @@ void VideoDecoder::startDecoding()
                     frame->width  = fw;
                     frame->height = fh;
                     frame->pts    = fpts;
+                    CudaBufMeta* meta = new CudaBufMeta();
+                    meta->bytes = nv12_size;
                     frame->buf[0] = av_buffer_create(d_buf, (int)nv12_size,
-                                                      cuda_buf_free, nullptr, 0);
+                                                      cuda_buf_free, meta, 0);
+                    if (!frame->buf[0]) {
+                        delete meta;
+                        cudaFree(d_buf);
+                        av_frame_unref(frame);
+                        continue;
+                    }
+                    registerStandaloneFrameAlloc(nv12_size);
                     frame->data[0]     = d_buf;
                     frame->data[1]     = d_buf + (size_t)fw * fh;
                     frame->linesize[0] = fw;
@@ -683,10 +787,10 @@ void VideoDecoder::startDecoding()
                     }
                     PipelineStats::getInstance().frames_pushed_fq.fetch_add(1, std::memory_order_relaxed);
 
-                    // 仅在 FrameQueue push 成功后才尝试推入 SlotQueue
+                    // 仅在 FrameQueue push 成功后才尝试推入输入 Arena
                     // 从原始 frame 克隆而非 frame_clone，因为 frame_clone 已被
                     //        push 到 FrameQueue，DisplayWorker 可能在另一线程中已释放它
-                    if (SlotQueue::getInstance().isChannelEnabled(channel_id_)) {
+                    if (InputFrameArenaStore::getInstance().isChannelEnabled(channel_id_)) {
                         int model_w = TRTDetector::getInstance().getInputW();
                         int model_h = TRTDetector::getInstance().getInputH();
                         if (model_w > 0 && model_h > 0 && frame->data[0] && frame->data[1]) {
@@ -701,12 +805,13 @@ void VideoDecoder::startDecoding()
                             meta.pad_w = (model_w - new_w) / 2;
                             meta.pad_h = (model_h - new_h) / 2;
 
-                            bool pushed = SlotQueue::getInstance().appendSample(
-                                [this, frame, model_w, model_h](Slot* det_slot, int sample_idx) -> bool {
-                                    if (!det_slot || !det_slot->getDeviceNV12Y(sample_idx) || !det_slot->getDeviceNV12UV(sample_idx)) {
-                                        return false;
-                                    }
-                                    cudaStream_t upload_stream = det_upload_stream_ ? det_upload_stream_ : static_cast<cudaStream_t>(0);
+                            bool pushed = InputFrameArenaStore::getInstance().pushFrame(
+                                channel_id_, channel_epoch_,
+                                frame->pts > 0 ? static_cast<int64_t>(frame->pts) : 0,
+                                meta,
+                                det_upload_stream_ ? det_upload_stream_ : static_cast<cudaStream_t>(0),
+                                [frame, model_w, model_h](uint8_t* dst_y, uint8_t* dst_uv, int dst_pitch, cudaStream_t stream) -> bool {
+                                    if (!dst_y || !dst_uv) return false;
                                     launchResizeNV12ToNV12Device(
                                         reinterpret_cast<const uint8_t*>(frame->data[0]),
                                         reinterpret_cast<const uint8_t*>(frame->data[1]),
@@ -714,23 +819,21 @@ void VideoDecoder::startDecoding()
                                         frame->linesize[1],
                                         frame->width,
                                         frame->height,
-                                        det_slot->getDeviceNV12Y(sample_idx),
-                                        det_slot->getDeviceNV12UV(sample_idx),
-                                        det_slot->getNV12Pitch(),
-                                        det_slot->getNV12Pitch(),
+                                        dst_y,
+                                        dst_uv,
+                                        dst_pitch,
+                                        dst_pitch,
                                         model_w,
                                         model_h,
-                                        upload_stream);
-                                    cudaEventRecord(det_slot->getEvent(), upload_stream);
+                                        stream);
                                     return true;
-                                },
-                                channel_id_, channel_epoch_, meta);
+                                });
                             if (!pushed) {
                                 PipelineStats::getInstance().frames_dropped_dq.fetch_add(1, std::memory_order_relaxed);
                             } else {
                                 PipelineStats::getInstance().frames_pushed_dq.fetch_add(1, std::memory_order_relaxed);
                                 if (is_image_mode_) {
-                                    fprintf(stderr, "[VideoDecoder] Image frame appended to batched slot (ch=%d, %dx%d)\n",
+                                    fprintf(stderr, "[VideoDecoder] Image frame appended to input arena (ch=%d, %dx%d)\n",
                                             channel_id_, frame->width, frame->height);
                                 }
                             }
@@ -738,7 +841,7 @@ void VideoDecoder::startDecoding()
                             PipelineStats::getInstance().frames_dropped_dq.fetch_add(1, std::memory_order_relaxed);
                         }
                     } else if (is_image_mode_) {
-                        fprintf(stderr, "[VideoDecoder] WARNING: Image ch=%d detection channel disabled, frame NOT pushed to SlotQueue\n",
+                        fprintf(stderr, "[VideoDecoder] WARNING: Image ch=%d detection channel disabled, frame NOT pushed to input arena\n",
                                 channel_id_);
                     }
                 } else {

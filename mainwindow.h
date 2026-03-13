@@ -114,11 +114,10 @@ private:
     bool m_modelLoaded = false;
     bool m_memoryInited = false;
     int m_workerCount = 0;
-    int m_workerCountSetting = 0; // 0 = 自动模式，>0 = 手动指定
     int m_inferenceStreams = 2;
     int m_workerMaxBatch = 16;
-    int m_contextPoolSize = 1; // 单 GPU 固定 1
     int m_baseSlots = 4; // 作为自动策略下限值
+    int m_inputArenaFrames = 200;
     QString m_modelPath = "/home/zzx/code/Qt/CudaForge-YOLO/src/engines/yolo26n.engine";
     std::vector<QString> m_classNames;
     QDateTime m_detectionStartTime;

@@ -3,7 +3,9 @@
 #include <cstdint>
 #include <string>
 #include <utility>
+#ifdef ENABLE_NVTX
 #include <nvtx3/nvToolsExt.h>
+#endif
 
 namespace nvtxutil {
 
@@ -11,6 +13,7 @@ class ScopedRange {
 public:
     ScopedRange(const char* message, std::uint32_t color)
     {
+#ifdef ENABLE_NVTX
         nvtxEventAttributes_t attr{};
         attr.version = NVTX_VERSION;
         attr.size = NVTX_EVENT_ATTRIB_STRUCT_SIZE;
@@ -19,11 +22,16 @@ public:
         attr.messageType = NVTX_MESSAGE_TYPE_ASCII;
         attr.message.ascii = message;
         id_ = nvtxRangeStartEx(&attr);
+#else
+        (void)message;
+        (void)color;
+#endif
     }
 
     ScopedRange(const std::string& message, std::uint32_t color)
         : owned_message_(message)
     {
+#ifdef ENABLE_NVTX
         nvtxEventAttributes_t attr{};
         attr.version = NVTX_VERSION;
         attr.size = NVTX_EVENT_ATTRIB_STRUCT_SIZE;
@@ -32,6 +40,9 @@ public:
         attr.messageType = NVTX_MESSAGE_TYPE_ASCII;
         attr.message.ascii = owned_message_.c_str();
         id_ = nvtxRangeStartEx(&attr);
+#else
+        (void)color;
+#endif
     }
 
     ScopedRange(const ScopedRange&) = delete;
@@ -60,13 +71,19 @@ public:
 private:
     void end()
     {
+#ifdef ENABLE_NVTX
         if (id_ != 0) {
             nvtxRangeEnd(id_);
             id_ = 0;
         }
+#endif
     }
 
+#ifdef ENABLE_NVTX
     nvtxRangeId_t id_ = 0;
+#else
+    std::uint64_t id_ = 0;
+#endif
     std::string owned_message_;
 };
 

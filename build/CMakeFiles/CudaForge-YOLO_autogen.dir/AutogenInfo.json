@@ -430,6 +430,18 @@
 			null
 		],
 		[
+			"/home/zzx/code/Qt/CudaForge-YOLO/src/core/ChannelResultQueue.hpp",
+			"MU",
+			"PRMOGMWJPH/moc_ChannelResultQueue.cpp",
+			null
+		],
+		[
+			"/home/zzx/code/Qt/CudaForge-YOLO/src/core/DetectionQueue.hpp",
+			"MU",
+			"PRMOGMWJPH/moc_DetectionQueue.cpp",
+			null
+		],
+		[
 			"/home/zzx/code/Qt/CudaForge-YOLO/src/core/DetectionResults.hpp",
 			"MU",
 			"PRMOGMWJPH/moc_DetectionResults.cpp",
@@ -442,9 +454,15 @@
 			null
 		],
 		[
-			"/home/zzx/code/Qt/CudaForge-YOLO/src/core/MemoryManager.hpp",
+			"/home/zzx/code/Qt/CudaForge-YOLO/src/core/GpuArena.hpp",
 			"MU",
-			"PRMOGMWJPH/moc_MemoryManager.cpp",
+			"PRMOGMWJPH/moc_GpuArena.cpp",
+			null
+		],
+		[
+			"/home/zzx/code/Qt/CudaForge-YOLO/src/core/InputFrameArenaStore.hpp",
+			"MU",
+			"PRMOGMWJPH/moc_InputFrameArenaStore.cpp",
 			null
 		],
 		[
@@ -472,9 +490,15 @@
 			null
 		],
 		[
-			"/home/zzx/code/Qt/CudaForge-YOLO/src/core/SlotQueue.hpp",
+			"/home/zzx/code/Qt/CudaForge-YOLO/src/core/SlotPool.hpp",
 			"MU",
-			"PRMOGMWJPH/moc_SlotQueue.cpp",
+			"PRMOGMWJPH/moc_SlotPool.cpp",
+			null
+		],
+		[
+			"/home/zzx/code/Qt/CudaForge-YOLO/src/core/TensorArenaManager.hpp",
+			"MU",
+			"PRMOGMWJPH/moc_TensorArenaManager.cpp",
 			null
 		],
 		[
@@ -493,6 +517,12 @@
 			"/home/zzx/code/Qt/CudaForge-YOLO/src/engine/TRTDetector.hpp",
 			"MU",
 			"GCRDZAAASK/moc_TRTDetector.cpp",
+			null
+		],
+		[
+			"/home/zzx/code/Qt/CudaForge-YOLO/src/engine/TRTWorker.hpp",
+			"MU",
+			"GCRDZAAASK/moc_TRTWorker.cpp",
 			null
 		],
 		[
@@ -603,13 +633,20 @@
 			"MU",
 			null
 		],
+		[ "/home/zzx/code/Qt/CudaForge-YOLO/src/core/GpuArena.cpp", "MU", null ],
 		[
-			"/home/zzx/code/Qt/CudaForge-YOLO/src/core/MemoryManager.cpp",
+			"/home/zzx/code/Qt/CudaForge-YOLO/src/core/InputFrameArenaStore.cpp",
 			"MU",
 			null
 		],
 		[
 			"/home/zzx/code/Qt/CudaForge-YOLO/src/core/PacketQueue.cpp",
+			"MU",
+			null
+		],
+		[ "/home/zzx/code/Qt/CudaForge-YOLO/src/core/SlotPool.cpp", "MU", null ],
+		[
+			"/home/zzx/code/Qt/CudaForge-YOLO/src/core/TensorArenaManager.cpp",
 			"MU",
 			null
 		],

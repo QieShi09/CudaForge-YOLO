@@ -40,6 +40,8 @@ public:
     std::atomic<int> current_pitch{0};
     std::atomic<int> current_format{AV_PIX_FMT_NONE};
 
+    static size_t totalDisplayVramBytes();
+
 private:
     int channel_id_;
     FrameQueue* queue_;
@@ -58,6 +60,8 @@ private:
     int gpu_width_ = 0;
     int gpu_height_ = 0;
     size_t gpu_buffer_bytes_ = 0;
+
+    static std::atomic<size_t> s_total_display_vram_bytes_;
 
 };
 

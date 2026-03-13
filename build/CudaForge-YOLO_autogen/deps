@@ -7,22 +7,30 @@ CudaForge-YOLO_autogen/timestamp: \
 	/home/zzx/code/Qt/CudaForge-YOLO/main.cpp \
 	/home/zzx/code/Qt/CudaForge-YOLO/mainwindow.cpp \
 	/home/zzx/code/Qt/CudaForge-YOLO/mainwindow.h \
+	/home/zzx/code/Qt/CudaForge-YOLO/src/core/ChannelResultQueue.hpp \
+	/home/zzx/code/Qt/CudaForge-YOLO/src/core/DetectionQueue.hpp \
 	/home/zzx/code/Qt/CudaForge-YOLO/src/core/DetectionResults.hpp \
 	/home/zzx/code/Qt/CudaForge-YOLO/src/core/FrameQueue.cpp \
 	/home/zzx/code/Qt/CudaForge-YOLO/src/core/FrameQueue.hpp \
-	/home/zzx/code/Qt/CudaForge-YOLO/src/core/MemoryManager.cpp \
-	/home/zzx/code/Qt/CudaForge-YOLO/src/core/MemoryManager.hpp \
+	/home/zzx/code/Qt/CudaForge-YOLO/src/core/GpuArena.cpp \
+	/home/zzx/code/Qt/CudaForge-YOLO/src/core/GpuArena.hpp \
+	/home/zzx/code/Qt/CudaForge-YOLO/src/core/InputFrameArenaStore.cpp \
+	/home/zzx/code/Qt/CudaForge-YOLO/src/core/InputFrameArenaStore.hpp \
 	/home/zzx/code/Qt/CudaForge-YOLO/src/core/NvtxUtils.hpp \
 	/home/zzx/code/Qt/CudaForge-YOLO/src/core/PacketQueue.cpp \
 	/home/zzx/code/Qt/CudaForge-YOLO/src/core/PacketQueue.hpp \
 	/home/zzx/code/Qt/CudaForge-YOLO/src/core/PipelineStats.hpp \
 	/home/zzx/code/Qt/CudaForge-YOLO/src/core/Slot.hpp \
-	/home/zzx/code/Qt/CudaForge-YOLO/src/core/SlotQueue.hpp \
+	/home/zzx/code/Qt/CudaForge-YOLO/src/core/SlotPool.cpp \
+	/home/zzx/code/Qt/CudaForge-YOLO/src/core/SlotPool.hpp \
+	/home/zzx/code/Qt/CudaForge-YOLO/src/core/TensorArenaManager.cpp \
+	/home/zzx/code/Qt/CudaForge-YOLO/src/core/TensorArenaManager.hpp \
 	/home/zzx/code/Qt/CudaForge-YOLO/src/core/Worker.cpp \
 	/home/zzx/code/Qt/CudaForge-YOLO/src/core/Worker.hpp \
 	/home/zzx/code/Qt/CudaForge-YOLO/src/engine/Logger.hpp \
 	/home/zzx/code/Qt/CudaForge-YOLO/src/engine/TRTDetector.cpp \
 	/home/zzx/code/Qt/CudaForge-YOLO/src/engine/TRTDetector.hpp \
+	/home/zzx/code/Qt/CudaForge-YOLO/src/engine/TRTWorker.hpp \
 	/home/zzx/code/Qt/CudaForge-YOLO/src/kernels/CudaImageProc.cu \
 	/home/zzx/code/Qt/CudaForge-YOLO/src/video/DisplayManager.cpp \
 	/home/zzx/code/Qt/CudaForge-YOLO/src/video/DisplayManager.hpp \
@@ -209,6 +217,7 @@ CudaForge-YOLO_autogen/timestamp: \
 	/usr/include/c++/11/type_traits \
 	/usr/include/c++/11/typeinfo \
 	/usr/include/c++/11/unordered_map \
+	/usr/include/c++/11/unordered_set \
 	/usr/include/c++/11/utility \
 	/usr/include/c++/11/variant \
 	/usr/include/c++/11/vector \

@@ -5,6 +5,8 @@
 #include <cstdio>
 #include <cuda_runtime.h>
 
+std::atomic<size_t> DisplayWorker::s_total_display_vram_bytes_{0};
+
 DisplayManager::DisplayManager(QObject *parent) : QObject(parent) {}
 
 DisplayManager::~DisplayManager() {
@@ -60,7 +62,16 @@ DisplayWorker::DisplayWorker(int channel_id, FrameQueue* queue)
 
 DisplayWorker::~DisplayWorker() {
     if (sws_.ctx) sws_freeContext(sws_.ctx);
-    if (gpu_buffer_) cudaFree(gpu_buffer_);
+    if (gpu_buffer_) {
+        cudaFree(gpu_buffer_);
+        s_total_display_vram_bytes_.fetch_sub(gpu_buffer_bytes_, std::memory_order_relaxed);
+        gpu_buffer_ = nullptr;
+        gpu_buffer_bytes_ = 0;
+    }
+}
+
+size_t DisplayWorker::totalDisplayVramBytes() {
+    return s_total_display_vram_bytes_.load(std::memory_order_relaxed);
 }
 
 void DisplayWorker::processLoop() {
@@ -117,7 +128,12 @@ void DisplayWorker::processLoop() {
             // NV12: 保持原格式，供 UI 直接渲染
             size_t nv12_size = static_cast<size_t>(w) * h * 3 / 2;
             if (gpu_width_ != w || gpu_height_ != h || gpu_buffer_bytes_ < nv12_size) {
-                if (gpu_buffer_) { cudaFree(gpu_buffer_); gpu_buffer_ = nullptr; }
+                if (gpu_buffer_) {
+                    cudaFree(gpu_buffer_);
+                    s_total_display_vram_bytes_.fetch_sub(gpu_buffer_bytes_, std::memory_order_relaxed);
+                    gpu_buffer_ = nullptr;
+                    gpu_buffer_bytes_ = 0;
+                }
                 cudaError_t err = cudaMalloc(&gpu_buffer_, nv12_size);
                 if (err != cudaSuccess) {
                     fprintf(stderr, "[Display ch=%d] FATAL: cudaMalloc NV12 display buffer (%zu bytes) failed: %s\n",
@@ -128,6 +144,7 @@ void DisplayWorker::processLoop() {
                     continue;
                 }
                 gpu_buffer_bytes_ = nv12_size;
+                s_total_display_vram_bytes_.fetch_add(nv12_size, std::memory_order_relaxed);
                 gpu_width_ = w;
                 gpu_height_ = h;
             }
@@ -149,7 +166,12 @@ void DisplayWorker::processLoop() {
             // Already RGBA on device: just copy into the persistent buffer for rendering
             size_t rgba_size = static_cast<size_t>(w) * h * 4;
             if (gpu_width_ != w || gpu_height_ != h || gpu_buffer_bytes_ < rgba_size) {
-                if (gpu_buffer_) { cudaFree(gpu_buffer_); gpu_buffer_ = nullptr; }
+                if (gpu_buffer_) {
+                    cudaFree(gpu_buffer_);
+                    s_total_display_vram_bytes_.fetch_sub(gpu_buffer_bytes_, std::memory_order_relaxed);
+                    gpu_buffer_ = nullptr;
+                    gpu_buffer_bytes_ = 0;
+                }
                 cudaError_t err = cudaMalloc(&gpu_buffer_, rgba_size);
                 if (err != cudaSuccess) {
                     fprintf(stderr, "[Display ch=%d] FATAL: cudaMalloc RGBA display buffer (%zu bytes) failed: %s\n",
@@ -160,6 +182,7 @@ void DisplayWorker::processLoop() {
                     continue;
                 }
                 gpu_buffer_bytes_ = rgba_size;
+                s_total_display_vram_bytes_.fetch_add(rgba_size, std::memory_order_relaxed);
                 gpu_width_ = w;
                 gpu_height_ = h;
             }

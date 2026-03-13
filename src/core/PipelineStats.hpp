@@ -16,8 +16,8 @@ struct PipelineStats {
 
     // === 解码阶段 ===
     std::atomic<uint64_t> frames_decoded{0};      // 解码成功的帧数
-    std::atomic<uint64_t> frames_pushed_dq{0};    // 成功推入 SlotQueue 的帧数
-    std::atomic<uint64_t> frames_dropped_dq{0};   // SlotQueue 满溢丢弃的帧数
+    std::atomic<uint64_t> frames_pushed_dq{0};    // 成功推入 InputFrameArenaStore 就绪队列的帧数
+    std::atomic<uint64_t> frames_dropped_dq{0};   // 输入就绪队列满溢丢弃的帧数
     std::atomic<uint64_t> demux_packets_read{0};  // Demux 读取到的视频包数
     std::atomic<uint64_t> demux_read_us{0};       // av_read_frame 总耗时（微秒）
     std::atomic<uint64_t> packets_popped{0};      // PacketQueue 弹出的包数

@@ -77,6 +77,14 @@ public:
     QLabel *m_lblVramOther;
     QLabel *txtDecCount;
     QLabel *m_lblDecoderCount;
+    QWidget *cardArena;
+    QVBoxLayout *vlCardArena;
+    QLabel *titleArena;
+    QFormLayout *formArena;
+    QLabel *txtInputArena;
+    QLabel *m_lblInputArena;
+    QLabel *txtOutputArena;
+    QLabel *m_lblOutputArena;
     QSpacerItem *leftSpacer;
     QVBoxLayout *middleColumnLayout;
     QWidget *cardThroughput;
@@ -189,7 +197,7 @@ public:
     {
         if (AdvancedSettingsDialog->objectName().isEmpty())
             AdvancedSettingsDialog->setObjectName(QString::fromUtf8("AdvancedSettingsDialog"));
-        AdvancedSettingsDialog->resize(980, 680);
+        AdvancedSettingsDialog->resize(1180, 680);
         verticalLayoutRoot = new QVBoxLayout(AdvancedSettingsDialog);
         verticalLayoutRoot->setSpacing(0);
         verticalLayoutRoot->setObjectName(QString::fromUtf8("verticalLayoutRoot"));
@@ -394,6 +402,45 @@ public:
 
 
         leftColumnLayout->addWidget(cardVram);
+
+        cardArena = new QWidget(dashPage);
+        cardArena->setObjectName(QString::fromUtf8("cardArena"));
+        cardArena->setProperty("card", QVariant(true));
+        vlCardArena = new QVBoxLayout(cardArena);
+        vlCardArena->setObjectName(QString::fromUtf8("vlCardArena"));
+        vlCardArena->setContentsMargins(10, 10, 10, 10);
+        titleArena = new QLabel(cardArena);
+        titleArena->setObjectName(QString::fromUtf8("titleArena"));
+
+        vlCardArena->addWidget(titleArena);
+
+        formArena = new QFormLayout();
+        formArena->setObjectName(QString::fromUtf8("formArena"));
+        txtInputArena = new QLabel(cardArena);
+        txtInputArena->setObjectName(QString::fromUtf8("txtInputArena"));
+
+        formArena->setWidget(0, QFormLayout::LabelRole, txtInputArena);
+
+        m_lblInputArena = new QLabel(cardArena);
+        m_lblInputArena->setObjectName(QString::fromUtf8("m_lblInputArena"));
+
+        formArena->setWidget(0, QFormLayout::FieldRole, m_lblInputArena);
+
+        txtOutputArena = new QLabel(cardArena);
+        txtOutputArena->setObjectName(QString::fromUtf8("txtOutputArena"));
+
+        formArena->setWidget(1, QFormLayout::LabelRole, txtOutputArena);
+
+        m_lblOutputArena = new QLabel(cardArena);
+        m_lblOutputArena->setObjectName(QString::fromUtf8("m_lblOutputArena"));
+
+        formArena->setWidget(1, QFormLayout::FieldRole, m_lblOutputArena);
+
+
+        vlCardArena->addLayout(formArena);
+
+
+        leftColumnLayout->addWidget(cardArena);
 
         leftSpacer = new QSpacerItem(20, 4, QSizePolicy::Minimum, QSizePolicy::Fixed);
 
@@ -784,9 +831,9 @@ public:
 
         m_spinSlots = new QSpinBox(cardPipelineParams);
         m_spinSlots->setObjectName(QString::fromUtf8("m_spinSlots"));
-        m_spinSlots->setMinimum(1);
-        m_spinSlots->setMaximum(256);
-        m_spinSlots->setValue(4);
+        m_spinSlots->setMinimum(16);
+        m_spinSlots->setMaximum(2000);
+        m_spinSlots->setValue(200);
 
         formPipelineParams->setWidget(0, QFormLayout::FieldRole, m_spinSlots);
 
@@ -985,7 +1032,7 @@ public:
         m_lblSlotPool->setText(QCoreApplication::translate("AdvancedSettingsDialog", "-- / --", nullptr));
         titleVram->setText(QCoreApplication::translate("AdvancedSettingsDialog", "VRAM Breakdown / \346\230\276\345\255\230\346\213\206\345\210\206(\344\274\260\347\256\227)", nullptr));
         titleVram->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "cardTitle", nullptr)));
-        txtVramSlot->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Slot / \346\216\250\347\220\206\346\247\275:", nullptr));
+        txtVramSlot->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Tensor Arenas / \345\274\240\351\207\217\346\261\240:", nullptr));
         txtVramSlot->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "rowTitle", nullptr)));
         m_lblVramSlot->setText(QCoreApplication::translate("AdvancedSettingsDialog", "--", nullptr));
         txtVramCtx->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Context / \344\270\212\344\270\213\346\226\207:", nullptr));
@@ -1000,6 +1047,14 @@ public:
         txtDecCount->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Decoders (HW/SW):", nullptr));
         txtDecCount->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "rowTitle", nullptr)));
         m_lblDecoderCount->setText(QCoreApplication::translate("AdvancedSettingsDialog", "--", nullptr));
+        titleArena->setText(QCoreApplication::translate("AdvancedSettingsDialog", "GPU Arenas / GPU \346\230\276\345\255\230\346\261\240", nullptr));
+        titleArena->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "cardTitle", nullptr)));
+        txtInputArena->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Input Arena:", nullptr));
+        txtInputArena->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "rowTitle", nullptr)));
+        m_lblInputArena->setText(QCoreApplication::translate("AdvancedSettingsDialog", "--", nullptr));
+        txtOutputArena->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Output Arena:", nullptr));
+        txtOutputArena->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "rowTitle", nullptr)));
+        m_lblOutputArena->setText(QCoreApplication::translate("AdvancedSettingsDialog", "--", nullptr));
         titleThroughput->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Throughput / \345\220\236\345\220\220\351\207\217 (\346\257\217 2 \347\247\222\351\207\207\346\240\267)", nullptr));
         titleThroughput->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "cardTitle", nullptr)));
         txtInput->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Input FPS / \350\276\223\345\205\245\351\200\237\347\216\207:", nullptr));
@@ -1070,7 +1125,7 @@ public:
         tabsMain->setTabText(tabsMain->indexOf(tabDashboard), QCoreApplication::translate("AdvancedSettingsDialog", "Dashboard / \344\273\252\350\241\250\347\233\230", nullptr));
         titleParams->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Pipeline Parameters / \347\256\241\347\272\277\345\217\202\346\225\260", nullptr));
         titleParams->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "cardTitle", nullptr)));
-        txtSlots->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Fixed Slots / \345\233\272\345\256\232\346\247\275\344\275\215:", nullptr));
+        txtSlots->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Input Arena Frames / \350\276\223\345\205\245\346\261\240\345\270\247\346\225\260:", nullptr));
         txtSlots->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "rowTitle", nullptr)));
         txtWorkers->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Worker Count / \346\216\250\347\220\206\347\272\277\347\250\213:", nullptr));
         txtWorkers->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "rowTitle", nullptr)));

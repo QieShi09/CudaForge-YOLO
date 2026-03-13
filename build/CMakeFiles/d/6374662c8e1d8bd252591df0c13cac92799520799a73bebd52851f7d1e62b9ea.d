@@ -7,22 +7,30 @@ CudaForge-YOLO_autogen/timestamp: \
   ../main.cpp \
   ../mainwindow.cpp \
   ../mainwindow.h \
+  ../src/core/ChannelResultQueue.hpp \
+  ../src/core/DetectionQueue.hpp \
   ../src/core/DetectionResults.hpp \
   ../src/core/FrameQueue.cpp \
   ../src/core/FrameQueue.hpp \
-  ../src/core/MemoryManager.cpp \
-  ../src/core/MemoryManager.hpp \
+  ../src/core/GpuArena.cpp \
+  ../src/core/GpuArena.hpp \
+  ../src/core/InputFrameArenaStore.cpp \
+  ../src/core/InputFrameArenaStore.hpp \
   ../src/core/NvtxUtils.hpp \
   ../src/core/PacketQueue.cpp \
   ../src/core/PacketQueue.hpp \
   ../src/core/PipelineStats.hpp \
   ../src/core/Slot.hpp \
-  ../src/core/SlotQueue.hpp \
+  ../src/core/SlotPool.cpp \
+  ../src/core/SlotPool.hpp \
+  ../src/core/TensorArenaManager.cpp \
+  ../src/core/TensorArenaManager.hpp \
   ../src/core/Worker.cpp \
   ../src/core/Worker.hpp \
   ../src/engine/Logger.hpp \
   ../src/engine/TRTDetector.cpp \
   ../src/engine/TRTDetector.hpp \
+  ../src/engine/TRTWorker.hpp \
   ../src/kernels/CudaImageProc.cu \
   ../src/video/DisplayManager.cpp \
   ../src/video/DisplayManager.hpp \
@@ -209,6 +217,7 @@ CudaForge-YOLO_autogen/timestamp: \
   /usr/include/c++/11/type_traits \
   /usr/include/c++/11/typeinfo \
   /usr/include/c++/11/unordered_map \
+  /usr/include/c++/11/unordered_set \
   /usr/include/c++/11/utility \
   /usr/include/c++/11/variant \
   /usr/include/c++/11/vector \

@@ -1,115 +1,73 @@
 #include "Worker.hpp"
-#include "SlotQueue.hpp"
-#include "MemoryManager.hpp"
+#include "InputFrameArenaStore.hpp"
+#include "SlotPool.hpp"
+#include "TensorArenaManager.hpp"
 #include "TRTDetector.hpp"
 #include "Slot.hpp"
-#include "DetectionResults.hpp"
 #include "PipelineStats.hpp"
 #include "NvtxUtils.hpp"
+#include "../engine/TRTWorker.hpp"
 #include <cuda_runtime_api.h>
 #include "../kernels/CudaImageProc.cuh"
 #include <iostream>
 #include <cstdlib>
 #include <algorithm>
-#include <thread>
 
-Worker::Worker(int id, size_t max_batch, std::chrono::milliseconds max_wait_ms,
-                             int total_workers, int stream_count)
+Worker::Worker(int id, size_t max_batch, std::chrono::milliseconds max_wait_ms)
         : id_(id),
             max_batch_(std::max<size_t>(1, max_batch)),
-            max_wait_ms_(max_wait_ms),
-            total_workers_(total_workers),
-            stream_count_(std::max(1, stream_count)) {}
+            max_wait_ms_(max_wait_ms) {}
 
 Worker::~Worker() { stop(); }
 
 void Worker::start() {
     if (running_.exchange(true)) return;
-    cudaSetDevice(0);
-    streams_.clear();
-    streams_.reserve(static_cast<size_t>(stream_count_));
-    for (int i = 0; i < stream_count_; ++i) {
-        cudaStream_t stream = nullptr;
-        if (cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) == cudaSuccess && stream) {
-            streams_.push_back(stream);
-        }
+    trt_worker_ = std::make_unique<TRTWorker>(id_);
+    if (!trt_worker_->init()) {
+        trt_worker_.reset();
+        running_.store(false, std::memory_order_release);
+        std::cerr << "[Worker] TRTWorker init failed, worker=" << id_ << std::endl;
+        return;
     }
-    if (streams_.empty()) {
-        cudaStream_t fallback = nullptr;
-        cudaStreamCreateWithFlags(&fallback, cudaStreamNonBlocking);
-        if (fallback) streams_.push_back(fallback);
-    }
-    stream_rr_ = 0;
     thr_ = std::thread(&Worker::run, this);
 }
 
 void Worker::stop() {
     if (!running_.exchange(false)) return;
     if (thr_.joinable()) thr_.join();
-    for (auto& stream : streams_) {
-        if (stream) cudaStreamDestroy(stream);
+    if (trt_worker_) {
+        trt_worker_->shutdown();
+        trt_worker_.reset();
     }
-    streams_.clear();
 }
 
 void Worker::run() {
     // 确保 worker 线程绑定正确的 CUDA 设备
     cudaSetDevice(0);
 
-    auto pick_stream = [this](bool require_idle) -> cudaStream_t {
-        if (streams_.empty()) return nullptr;
-        const int count = static_cast<int>(streams_.size());
-        const int start = stream_rr_ % std::max(1, count);
-        cudaStream_t fallback = nullptr;
-        for (int offset = 0; offset < count; ++offset) {
-            int idx = (start + offset) % count;
-            cudaStream_t cand = streams_[static_cast<size_t>(idx)];
-            if (!cand) continue;
-            if (!fallback) fallback = cand;
-            cudaError_t q = cudaStreamQuery(cand);
-            if (q == cudaSuccess) {
-                stream_rr_ = (idx + 1) % count;
-                return cand;
-            }
-            if (q != cudaErrorNotReady) {
-                cudaGetLastError();
-            }
-        }
-        if (require_idle) return nullptr;
-        stream_rr_ = (start + 1) % count;
-        return fallback;
-    };
-
     while (running_) {
-        cudaStream_t selected_stream = pick_stream(true);
-        bool has_idle_stream = (selected_stream != nullptr);
+        int inflight = inflight_infers_.load(std::memory_order_relaxed);
+        size_t desired_max_batch = std::max<size_t>(1, max_batch_);
+        size_t desired_min_batch = (inflight < max_inflight_per_worker_) ? std::min<size_t>(desired_max_batch, 4) : 1;
 
-        auto ready = SlotQueue::getInstance().pop_bulk(1, max_wait_ms_);
-        if (ready.empty()) {
-            if (has_idle_stream) {
-                SlotQueue::getInstance().flushPending();
-            } else {
-                SlotQueue::getInstance().flushPendingIfStale();
-            }
-            ready = SlotQueue::getInstance().pop_bulk_nowait(1);
-        }
-        if (ready.empty()) {
+        auto samples = InputFrameArenaStore::getInstance().popBatch(
+            desired_max_batch,
+            desired_min_batch,
+            max_wait_ms_);
+
+        if (samples.empty()) {
             PipelineStats::getInstance().worker_pop_empty.fetch_add(1, std::memory_order_relaxed);
             continue;
         }
-        Slot* slot = ready.front().slot;
+
+        Slot* slot = SlotPool::getInstance().pop();
         if (!slot) continue;
 
-        if (!selected_stream) {
-            auto idle_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1);
-            while (running_ && std::chrono::steady_clock::now() < idle_deadline) {
-                selected_stream = pick_stream(true);
-                if (selected_stream) break;
-                std::this_thread::sleep_for(std::chrono::microseconds(200));
-            }
-        }
-        if (!selected_stream) {
-            selected_stream = pick_stream(false);
+        slot->clear();
+        for (size_t i = 0; i < samples.size(); ++i) {
+            const auto& sm = samples[i];
+            slot->appendSampleMeta(sm.channel_id, sm.epoch, sm.preproc);
+            slot->setFrameTimestamp(static_cast<int>(i), sm.timestamp_us);
         }
 
         auto batchRange = nvtxutil::ScopedRange(
@@ -120,9 +78,10 @@ void Worker::run() {
             static_cast<uint64_t>(std::max(0, slot->getCurBatchSize())), std::memory_order_relaxed);
 
         // 使用 worker 持有的 stream 提交异步推理（复用）
-        cudaStream_t stream = selected_stream;
+        cudaStream_t stream = trt_worker_ ? trt_worker_->stream() : nullptr;
         if (!stream) {
-            MemoryManager::getInstance().release(slot);
+            InputFrameArenaStore::getInstance().releaseBatchNow(samples);
+            SlotPool::getInstance().push(slot);
             continue;
         }
 
@@ -150,27 +109,50 @@ void Worker::run() {
         int model_w = TRTDetector::getInstance().getInputW();
         int model_h = TRTDetector::getInstance().getInputH();
         size_t per_sample_bytes = static_cast<size_t>(3) * model_w * model_h * sizeof(float);
-        int batch_size = std::min(slot->getCurBatchSize(), TRTDetector::getInstance().getMaxBatch());
+        int detector_max_batch = TRTDetector::getInstance().getMaxBatch();
+        if (detector_max_batch <= 0) detector_max_batch = 1;
+        int batch_size = std::min(static_cast<int>(samples.size()), detector_max_batch);
         if (batch_size <= 0) {
-            MemoryManager::getInstance().release(slot);
+            InputFrameArenaStore::getInstance().releaseBatchNow(samples);
+            SlotPool::getInstance().push(slot);
             destroy_timing_events(ev_pre_start, ev_pre_end, ev_inf_start, ev_inf_end);
             continue;
         }
+
+        size_t input_bytes = static_cast<size_t>(batch_size) * per_sample_bytes;
+        size_t output_bytes = TRTDetector::getInstance().getOutputBytesPerBatch() * static_cast<size_t>(batch_size);
+        void* dev_in = TensorArenaManager::getInstance().allocateInput(input_bytes);
+        void* dev_out = TensorArenaManager::getInstance().allocateOutput(output_bytes);
+        if (!dev_in || !dev_out) {
+            if (dev_in) TensorArenaManager::getInstance().deallocateInput(dev_in, input_bytes);
+            if (dev_out) TensorArenaManager::getInstance().deallocateOutput(dev_out, output_bytes);
+            InputFrameArenaStore::getInstance().releaseBatchNow(samples);
+            SlotPool::getInstance().push(slot);
+            destroy_timing_events(ev_pre_start, ev_pre_end, ev_inf_start, ev_inf_end);
+            continue;
+        }
+        slot->setDeviceIn(dev_in, input_bytes);
+        slot->setDeviceOut(dev_out, output_bytes);
 
         {
             auto preprocessRange = nvtxutil::ScopedRange(
                 nvtxutil::makeWorkerLabel("Preprocess", id_, batch_size),
                 nvtxutil::color::Preprocess);
-            cudaStreamWaitEvent(stream, slot->getEvent(), 0);
             for (int i = 0; i < batch_size; ++i) {
-                float* dst_ptr = reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(slot->getDeviceIn()) + static_cast<size_t>(i) * per_sample_bytes);
+                const auto& sm = samples[static_cast<size_t>(i)];
+                if (sm.ready_event) {
+                    cudaStreamWaitEvent(stream, sm.ready_event, 0);
+                }
+                uint8_t* src_y = reinterpret_cast<uint8_t*>(sm.ptr);
+                uint8_t* src_uv = src_y + static_cast<size_t>(model_w) * model_h;
+                float* dst_ptr = reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(dev_in) + static_cast<size_t>(i) * per_sample_bytes);
                 launchNV12ToFloatNCHWDevice(
-                    slot->getDeviceNV12Y(i),
-                    slot->getDeviceNV12UV(i),
-                    slot->getNV12Pitch(),
-                    slot->getNV12Pitch(),
-                    slot->getNV12W(),
-                    slot->getNV12H(),
+                    src_y,
+                    src_uv,
+                    model_w,
+                    model_w,
+                    model_w,
+                    model_h,
                     dst_ptr,
                     model_w,
                     model_h,
@@ -200,8 +182,10 @@ void Worker::run() {
             slot->setupBatch(batch_size, stream);
 
             // 提交异步推理，推理完成回调负责释放帧与回收 slot
-            ok = TRTDetector::getInstance().asyncInfer(slot, stream,
-            [ev_pre_start, ev_pre_end, ev_inf_start, ev_inf_end, gpu_timing_enabled, workerId = id_](Slot* s, bool success) {
+            ok = TRTDetector::getInstance().asyncInfer(slot,
+            trt_worker_ ? trt_worker_->context() : nullptr,
+            stream,
+            [this, ev_pre_start, ev_pre_end, ev_inf_start, ev_inf_end, gpu_timing_enabled, workerId = id_](Slot* s, bool success) {
                 auto postRange = nvtxutil::ScopedRange(
                     nvtxutil::makeWorkerLabel("Postprocess", workerId, s ? s->getCurBatchSize() : 0),
                     nvtxutil::color::Postprocess);
@@ -222,58 +206,42 @@ void Worker::run() {
                     cudaEventDestroy(ev_inf_start);
                     cudaEventDestroy(ev_inf_end);
                 }
-                if (success) {
-                    // 后处理：解析推理结果并将检测框坐标缩放回原图
-                    auto detections_batch = TRTDetector::getInstance().parseDetections(s);
-                    for (int i = 0; i < s->getCurBatchSize(); ++i) {
-                        auto meta = s->getPreprocMeta(i);
-                        std::vector<DetectionResults::DetectionBox> mapped;
-                        mapped.reserve(detections_batch[i].size());
-                        for (auto& det : detections_batch[i]) {
-                            // 缩放bbox回原图坐标
-                            float x = (det.x - meta.pad_w) / meta.scale;
-                            float y = (det.y - meta.pad_h) / meta.scale;
-                            float w = det.w / meta.scale;
-                            float h = det.h / meta.scale;
-
-                            // clamp to image bounds
-                            float x0 = std::max(0.0f, std::min(x, static_cast<float>(meta.orig_w - 1)));
-                            float y0 = std::max(0.0f, std::min(y, static_cast<float>(meta.orig_h - 1)));
-                            float x1 = std::max(0.0f, std::min(x + w, static_cast<float>(meta.orig_w - 1)));
-                            float y1 = std::max(0.0f, std::min(y + h, static_cast<float>(meta.orig_h - 1)));
-
-                            DetectionResults::DetectionBox out;
-                            out.x = x0;
-                            out.y = y0;
-                            out.w = std::max(0.0f, x1 - x0);
-                            out.h = std::max(0.0f, y1 - y0);
-                            out.conf = det.conf;
-                            out.class_id = det.class_id;
-                            mapped.push_back(out);
-                        }
-                        int channel_id = s->getSampleChannelId(i);
-                        uint64_t epoch = s->getSampleEpoch(i);
-                        // 使用 epoch 保护：仅当通道 epoch 匹配时才写入结果
-                        // 防止旧视频源的异步回调覆盖新图片源的检测结果
-                        if (epoch > 0) {
-                            DetectionResults::getInstance().updateIfCurrent(channel_id, epoch, std::move(mapped));
-                        } else {
-                            DetectionResults::getInstance().update(channel_id, std::move(mapped));
-                        }
-                        PipelineStats::getInstance().detections_total.fetch_add(
-                            static_cast<uint64_t>(detections_batch[i].size()), std::memory_order_relaxed);
-                    }
+                (void)success;
+                if (s && s->getDeviceOut() && s->getOutputBytes() > 0) {
+                    TensorArenaManager::getInstance().deallocateOutput(s->getDeviceOut(), s->getOutputBytes());
                 }
+                inflight_infers_.fetch_sub(1, std::memory_order_relaxed);
                 // 回收 Slot
-                MemoryManager::getInstance().release(s);
+                SlotPool::getInstance().push(s);
             },
-            gpu_timing_enabled ? ev_inf_end : nullptr
+            slot->getEvent()
         );
         }
 
         if (!ok) {
+            static std::atomic<uint64_t> s_submit_fail_count{0};
+            uint64_t fail_n = s_submit_fail_count.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (fail_n % 50 == 1) {
+                std::cerr << "[Worker " << id_ << "] asyncInfer submit failed x" << fail_n
+                          << " (samples=" << samples.size() << ", detMax=" << TRTDetector::getInstance().getMaxBatch() << ")" << std::endl;
+            }
+            InputFrameArenaStore::getInstance().releaseBatchNow(samples);
+            if (slot->getDeviceIn() && slot->getInputBytes() > 0) {
+                TensorArenaManager::getInstance().deallocateInput(slot->getDeviceIn(), slot->getInputBytes());
+            }
+            if (slot->getDeviceOut() && slot->getOutputBytes() > 0) {
+                TensorArenaManager::getInstance().deallocateOutput(slot->getDeviceOut(), slot->getOutputBytes());
+            }
             destroy_timing_events(ev_pre_start, ev_pre_end, ev_inf_start, ev_inf_end);
-            MemoryManager::getInstance().release(slot);
+            SlotPool::getInstance().push(slot);
+        } else {
+            InputFrameArenaStore::getInstance().releaseBatchAfter(
+                samples,
+                slot->getEvent());
+            TensorArenaManager::getInstance().deallocateInputAfter(
+                slot->getDeviceIn(), slot->getInputBytes(),
+                slot->getEvent());
+            inflight_infers_.fetch_add(1, std::memory_order_relaxed);
         }
 
         // 立即返回循环，继续拉取下一批（推理为异步进行）

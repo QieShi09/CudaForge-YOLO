@@ -14,6 +14,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 
 /**
  * @brief TRTDetector (单例/共享资源类)
@@ -44,25 +45,10 @@ public:
      */
     nvinfer1::IExecutionContext* createContext();
 
-    // 池化获取/归还 context
-    nvinfer1::IExecutionContext* acquireContext();
-    void releaseContext(nvinfer1::IExecutionContext* ctx);
-
-    /**
-     * @brief 主动缩减 context 池，销毁多余的 ExecutionContext 来释放显存
-     * @param keep 保留的最小 context 数量
-     */
-    void shrinkContextPool(size_t keep);
-
-    /**
-     * @brief 调整 context 池到目标大小（可增可减）
-     * @param target 目标 context 数量，0 表示不做任何调整
-     */
-    void resizeContextPool(size_t target);
-
     // 异步推理：使用提供的 CUDA stream 在 stream 完成时回调
     // cb(slot, success)
-    bool asyncInfer(Slot* slot, cudaStream_t stream, std::function<void(Slot*, bool)> cb,
+    bool asyncInfer(Slot* slot, nvinfer1::IExecutionContext* context,
+                    cudaStream_t stream, std::function<void(Slot*, bool)> cb,
                     cudaEvent_t infer_end_event = nullptr);
 
     // 表示 engine 是否支持运行时动态设置 batch/shape
@@ -70,10 +56,7 @@ public:
 
     // 统计：当前创建的 context 总数（创建-销毁）
     int getContextTotalCount() const {
-        int created = ctx_created_.load(std::memory_order_relaxed);
-        int destroyed = ctx_destroyed_.load(std::memory_order_relaxed);
-        int total = created - destroyed;
-        return total >= 0 ? total : 0;
+        return ctx_created_.load(std::memory_order_relaxed);
     }
 
     /**
@@ -92,20 +75,35 @@ public:
     int getMaxBatch() const { return max_batch_; }
     size_t getOutputBytesPerBatch() const { return output_bytes_per_batch_; }
 
-    // 解析检测结果：假设输出格式为 [batch, num_boxes, 6]，每个box: [x,y,w,h,conf,class]
+    // 解析检测结果：基于独立 host 输出缓冲
+    // 假设输出格式为 [batch, num_boxes, 6]，每个box: [x,y,w,h,conf,class]
     // 返回 vector<vector<Detection>> ，外层batch，内层detections
     struct Detection {
         float x, y, w, h, conf;
         int class_id;
     };
-    std::vector<std::vector<Detection>> parseDetections(Slot* slot, float conf_threshold = 0.5f);
+    std::vector<std::vector<Detection>> parseDetections(const float* host_out,
+                                                        int batch_size,
+                                                        float conf_threshold = 0.25f);
 
 private:
+    struct SampleMeta {
+        Slot::PreprocMeta preproc;
+        int channel_id = 0;
+        uint64_t epoch = 0;
+    };
+
     struct CallbackTask {
-        nvinfer1::IExecutionContext* ctx = nullptr;
         Slot* slot = nullptr;
         std::function<void(Slot*, bool)> cb;
+        float* host_out = nullptr;
+        size_t output_bytes = 0;
+        int batch_size = 0;
+        std::vector<SampleMeta> samples;
     };
+
+    float* acquireHostOutputBuffer();
+    void releaseHostOutputBuffer(float* ptr);
 
     void ensureCallbackWorker();
     void stopCallbackWorker();
@@ -130,9 +128,7 @@ private:
     int output_box_size_ = 0;
 
     std::atomic<int> ctx_created_{0};
-    std::atomic<int> ctx_destroyed_{0};
     std::atomic<bool> shutting_down_{false};
-    size_t context_pool_limit_ = 1; // 单 GPU 模式固定单 context
 
     // 异步推理回调 in-flight 计数器：shutdown 前必须等待归零
     std::atomic<int> inflight_callbacks_{0};
@@ -145,10 +141,9 @@ private:
     std::thread callback_worker_;
     bool callback_worker_running_ = false;
 
-    // 上下文池与并发控制
-    std::mutex ctx_mutex_;
-    std::condition_variable ctx_cv_;
-    std::deque<nvinfer1::IExecutionContext*> context_pool_;
+    std::mutex host_buf_mutex_;
+    std::vector<float*> host_buf_pool_;
+
     bool dynamic_shape_supported_ = false;
 
     // 禁止拷贝

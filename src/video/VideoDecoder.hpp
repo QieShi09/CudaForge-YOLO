@@ -84,6 +84,9 @@ public Q_SLOTS:
 
     // 统计：解码器显存与数量（估算）
     static size_t totalDecoderVramBytes();
+    static size_t totalStandaloneFrameVramBytes();
+    static void registerStandaloneFrameAlloc(size_t bytes);
+    static void registerStandaloneFrameFree(size_t bytes);
     static int hwDecoderCount();
     static int swDecoderCount();
     static int maxHwDecoders();
@@ -137,6 +140,7 @@ private:
     cudaStream_t det_upload_stream_ = nullptr;
 
     static std::atomic<size_t> s_total_decoder_vram_bytes;
+    static std::atomic<size_t> s_total_standalone_frame_vram_bytes;
     static std::atomic<int> s_hw_decoder_count;
     static std::atomic<int> s_sw_decoder_count;
 

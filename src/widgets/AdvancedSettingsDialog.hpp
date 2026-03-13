@@ -26,10 +26,11 @@ class AdvancedSettingsDialog : public QDialog
 public:
     struct Settings {
         int baseSlots = 4;
-        int workerCount = 0;        // 0 表示自动
-        int inferenceStreams = 2;   // 推理并行 stream 数
+        int inputArenaFrames = 200;
+        int workerCount = 2;        // 与 inferenceStreams 绑定
+        int inferenceStreams = 2;   // 推理并行 worker 数（每 worker 固定 1 context + 1 stream）
         int workerMaxBatch = 16;
-        int contextPoolSize = 1;    // 单 GPU 固定 1，不允许配置
+        int contextPoolSize = 1;    // 保留字段，固定 1
         QString modelPath = "/home/zzx/code/Qt/CudaForge-YOLO/src/engines/yolo26n.engine";
         QString classesPath = "src/engines/class.txt";
         int statsInterval = 5;  // 性能统计间隔（秒）
@@ -99,6 +100,8 @@ private:
     QLabel*       m_lblVramCtx = nullptr;
     QLabel*       m_lblVramDecoder = nullptr;
     QLabel*       m_lblDecoderCount = nullptr;
+    QLabel*       m_lblInputArena = nullptr;
+    QLabel*       m_lblOutputArena = nullptr;
     QLabel*       m_lblSlotPool = nullptr;
     QProgressBar* m_barSlotPool = nullptr;
     QLabel*       m_lblDetQueue = nullptr;

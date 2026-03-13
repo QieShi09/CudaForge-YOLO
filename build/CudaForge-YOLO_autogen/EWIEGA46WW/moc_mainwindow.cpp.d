@@ -1,7 +1,10 @@
 /home/zzx/code/Qt/CudaForge-YOLO/build/CudaForge-YOLO_autogen/EWIEGA46WW/moc_mainwindow.cpp: /home/zzx/code/Qt/CudaForge-YOLO/mainwindow.h \
   /home/zzx/code/Qt/CudaForge-YOLO/build/CudaForge-YOLO_autogen/moc_predefs.h \
   /home/zzx/code/Qt/CudaForge-YOLO/src/core/FrameQueue.hpp \
+  /home/zzx/code/Qt/CudaForge-YOLO/src/core/GpuArena.hpp \
+  /home/zzx/code/Qt/CudaForge-YOLO/src/core/InputFrameArenaStore.hpp \
   /home/zzx/code/Qt/CudaForge-YOLO/src/core/PacketQueue.hpp \
+  /home/zzx/code/Qt/CudaForge-YOLO/src/core/Slot.hpp \
   /home/zzx/code/Qt/CudaForge-YOLO/src/core/Worker.hpp \
   /home/zzx/code/Qt/CudaForge-YOLO/src/video/DisplayManager.hpp \
   /home/zzx/code/Qt/CudaForge-YOLO/src/video/VideoDecoder.hpp \
@@ -181,6 +184,7 @@
   /usr/include/c++/11/type_traits \
   /usr/include/c++/11/typeinfo \
   /usr/include/c++/11/unordered_map \
+  /usr/include/c++/11/unordered_set \
   /usr/include/c++/11/utility \
   /usr/include/c++/11/variant \
   /usr/include/c++/11/vector \
