@@ -18,6 +18,17 @@
 
 class InputFrameArenaStore {
 public:
+    enum class SampleState : uint8_t {
+        Ready = 1,
+        Inflight = 2,
+    };
+
+    struct SampleRange {
+        uintptr_t ptr = 0;
+        size_t bytes = 0;
+        SampleState state = SampleState::Ready;
+    };
+
     struct FrameSample {
         void* ptr = nullptr;
         size_t bytes = 0;
@@ -42,7 +53,7 @@ public:
         return inst;
     }
 
-    bool init(size_t arena_bytes, size_t frame_bytes, size_t frame_width, size_t max_ready_frames);
+    bool init(size_t arena_bytes, size_t sample_bytes, size_t max_ready_frames);
     void shutdown();
 
     void enable();
@@ -59,7 +70,7 @@ public:
                    int64_t timestamp_us,
                    const Slot::PreprocMeta& preproc,
                    cudaStream_t upload_stream,
-                   const std::function<bool(uint8_t* dst_y, uint8_t* dst_uv, int pitch, cudaStream_t stream)>& fill_fn);
+                   const std::function<bool(void* dst, size_t bytes, cudaStream_t stream)>& fill_fn);
 
     std::vector<FrameSample> popBatch(size_t max_batch,
                                       size_t min_batch,
@@ -70,6 +81,8 @@ public:
 
     Stats getStats() const;
     GpuArena::Stats arenaStats() const;
+    std::vector<SampleRange> getSampleRanges() const;
+    uintptr_t arenaBaseAddress() const;
 
 private:
     enum class NodeState : uint8_t { Free = 0, Ready = 1, Inflight = 2 };
@@ -93,8 +106,6 @@ private:
 
     GpuArena arena_{"input-frame-arena"};
     size_t frame_bytes_ = 0;
-    size_t frame_pitch_ = 0;
-    size_t frame_width_ = 0;
     size_t max_ready_frames_ = 0;
 
     std::deque<Node*> ready_queue_;

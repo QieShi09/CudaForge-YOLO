@@ -6,16 +6,14 @@ InputFrameArenaStore::~InputFrameArenaStore() {
     shutdown();
 }
 
-bool InputFrameArenaStore::init(size_t arena_bytes, size_t frame_bytes, size_t frame_width, size_t max_ready_frames) {
+bool InputFrameArenaStore::init(size_t arena_bytes, size_t sample_bytes, size_t max_ready_frames) {
     shutdown();
-    if (arena_bytes == 0 || frame_bytes == 0 || frame_width == 0 || max_ready_frames == 0) return false;
+    if (arena_bytes == 0 || sample_bytes == 0 || max_ready_frames == 0) return false;
 
     if (!arena_.init(arena_bytes)) return false;
 
     std::lock_guard<std::mutex> lk(mutex_);
-    frame_bytes_ = frame_bytes;
-    frame_width_ = frame_width;
-    frame_pitch_ = frame_width_;
+    frame_bytes_ = sample_bytes;
     max_ready_frames_ = max_ready_frames;
     dropped_frames_ = 0;
     enabled_ = true;
@@ -43,8 +41,6 @@ void InputFrameArenaStore::shutdown() {
         free_nodes_.clear();
         disabled_channels_.clear();
         frame_bytes_ = 0;
-        frame_pitch_ = 0;
-        frame_width_ = 0;
         max_ready_frames_ = 0;
     }
     cv_.notify_all();
@@ -124,7 +120,7 @@ bool InputFrameArenaStore::pushFrame(int channel_id,
                                      int64_t timestamp_us,
                                      const Slot::PreprocMeta& preproc,
                                      cudaStream_t upload_stream,
-                                     const std::function<bool(uint8_t* dst_y, uint8_t* dst_uv, int pitch, cudaStream_t stream)>& fill_fn) {
+                                     const std::function<bool(void* dst, size_t bytes, cudaStream_t stream)>& fill_fn) {
     if (!fill_fn) return false;
 
     {
@@ -140,9 +136,7 @@ bool InputFrameArenaStore::pushFrame(int channel_id,
         return false;
     }
 
-    uint8_t* dst_y = reinterpret_cast<uint8_t*>(ptr);
-    uint8_t* dst_uv = dst_y + frame_pitch_;
-    if (!fill_fn(dst_y, dst_uv, static_cast<int>(frame_pitch_), upload_stream)) {
+    if (!fill_fn(ptr, frame_bytes_, upload_stream)) {
         arena_.deallocate(ptr, frame_bytes_);
         std::lock_guard<std::mutex> lk(mutex_);
         ++dropped_frames_;
@@ -276,4 +270,25 @@ InputFrameArenaStore::Stats InputFrameArenaStore::getStats() const {
 
 GpuArena::Stats InputFrameArenaStore::arenaStats() const {
     return arena_.getStats();
+}
+
+std::vector<InputFrameArenaStore::SampleRange> InputFrameArenaStore::getSampleRanges() const {
+    std::vector<SampleRange> ranges;
+    std::lock_guard<std::mutex> lk(mutex_);
+    ranges.reserve(nodes_.size());
+    for (const auto& n : nodes_) {
+        if (!n || n->state == NodeState::Free || n->sample.ptr == nullptr || n->sample.bytes == 0) {
+            continue;
+        }
+        SampleRange range;
+        range.ptr = reinterpret_cast<uintptr_t>(n->sample.ptr);
+        range.bytes = n->sample.bytes;
+        range.state = (n->state == NodeState::Ready) ? SampleState::Ready : SampleState::Inflight;
+        ranges.push_back(range);
+    }
+    return ranges;
+}
+
+uintptr_t InputFrameArenaStore::arenaBaseAddress() const {
+    return arena_.baseAddress();
 }

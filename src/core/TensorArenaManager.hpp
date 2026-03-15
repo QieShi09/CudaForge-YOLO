@@ -25,6 +25,10 @@ public:
 
     GpuArena::Stats inputStats() const;
     GpuArena::Stats outputStats() const;
+    std::vector<GpuArena::Segment> inputSegments() const;
+    std::vector<GpuArena::Segment> outputSegments() const;
+    uintptr_t inputBaseAddress() const;
+    uintptr_t outputBaseAddress() const;
 
 private:
     TensorArenaManager() = default;

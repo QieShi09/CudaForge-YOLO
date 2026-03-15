@@ -55,6 +55,7 @@ public:
 
     // 设置类别名称文件路径（全局生效，触发下次 paintGL 重新加载）
     static void setClassesFilePath(const QString& path);
+    static void setDisplayConfidenceThreshold(float threshold);
 
     // 设置关闭按钮可见性（详情模式下隐藏）
     void setCloseBtnVisible(bool visible);
@@ -117,6 +118,7 @@ private:
     int m_refreshFPS = 30; // 刷新频率，默认网格模式 30 FPS
 
     static QString s_classesFilePath; // 类别名称文件路径（全局共享）
+    static float s_displayConfThreshold; // 显示置信度阈值（全局共享）
 };
 
 #endif // VIDEOWIDGET_H

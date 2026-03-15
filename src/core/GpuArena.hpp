@@ -13,12 +13,28 @@
 
 class GpuArena {
 public:
+    enum class SegmentStatus : uint8_t {
+        Free = 0,
+        Active = 1,
+        PendingFree = 2,
+    };
+
+    struct Segment {
+        size_t offset = 0;
+        size_t bytes = 0;
+        SegmentStatus status = SegmentStatus::Free;
+    };
+
     struct Stats {
         size_t total_bytes = 0;
         size_t used_bytes = 0;
         size_t free_bytes = 0;
         size_t largest_free_block = 0;
         size_t free_block_count = 0;
+        size_t pending_free_count = 0;
+        size_t pending_free_bytes = 0;
+        size_t active_alloc_count = 0;
+        size_t active_alloc_bytes = 0;
         double utilization = 0.0;
         double fragmentation_ratio = 0.0;
     };
@@ -35,6 +51,8 @@ public:
 
     Stats getStats() const;
     double getFragmentationRatio() const;
+    std::vector<Segment> getSegments() const;
+    uintptr_t baseAddress() const;
     bool isInitialized() const { return initialized_.load(std::memory_order_relaxed); }
 
 private:
@@ -54,6 +72,7 @@ private:
 
     mutable std::mutex mutex_;
     std::map<size_t, size_t> free_blocks_;
+    std::map<size_t, size_t> active_blocks_;
     size_t used_bytes_ = 0;
 
     std::vector<PendingFree> pending_frees_;

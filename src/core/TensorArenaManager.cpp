@@ -66,3 +66,23 @@ GpuArena::Stats TensorArenaManager::outputStats() const {
     std::lock_guard<std::mutex> lk(mutex_);
     return output_arena_.getStats();
 }
+
+std::vector<GpuArena::Segment> TensorArenaManager::inputSegments() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return input_arena_.getSegments();
+}
+
+std::vector<GpuArena::Segment> TensorArenaManager::outputSegments() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return output_arena_.getSegments();
+}
+
+uintptr_t TensorArenaManager::inputBaseAddress() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return input_arena_.baseAddress();
+}
+
+uintptr_t TensorArenaManager::outputBaseAddress() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return output_arena_.baseAddress();
+}

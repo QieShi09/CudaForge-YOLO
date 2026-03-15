@@ -10,6 +10,7 @@ bool SlotPool::init(size_t slot_count, int batch_capacity) {
 
     std::lock_guard<std::mutex> lk(mutex_);
     stop_.store(false, std::memory_order_release);
+    peak_active_slots_.store(0, std::memory_order_relaxed);
     all_slots_.reserve(slot_count);
     free_slots_.clear();
 
@@ -43,6 +44,7 @@ void SlotPool::shutdown() {
 
     free_slots_.clear();
     all_slots_.clear();
+    peak_active_slots_.store(0, std::memory_order_relaxed);
 }
 
 Slot* SlotPool::pop() {
@@ -53,6 +55,9 @@ Slot* SlotPool::pop() {
     if (stop_.load(std::memory_order_acquire) || free_slots_.empty()) return nullptr;
     Slot* slot = free_slots_.front();
     free_slots_.pop_front();
+    size_t active = (all_slots_.size() >= free_slots_.size()) ? (all_slots_.size() - free_slots_.size()) : 0;
+    size_t peak = peak_active_slots_.load(std::memory_order_relaxed);
+    while (active > peak && !peak_active_slots_.compare_exchange_weak(peak, active, std::memory_order_relaxed)) {}
     if (slot) slot->clear();
     return slot;
 }
@@ -62,6 +67,9 @@ Slot* SlotPool::tryPop() {
     if (stop_.load(std::memory_order_acquire) || free_slots_.empty()) return nullptr;
     Slot* slot = free_slots_.front();
     free_slots_.pop_front();
+    size_t active = (all_slots_.size() >= free_slots_.size()) ? (all_slots_.size() - free_slots_.size()) : 0;
+    size_t peak = peak_active_slots_.load(std::memory_order_relaxed);
+    while (active > peak && !peak_active_slots_.compare_exchange_weak(peak, active, std::memory_order_relaxed)) {}
     if (slot) slot->clear();
     return slot;
 }
@@ -87,4 +95,12 @@ size_t SlotPool::freeSlots() const {
 size_t SlotPool::activeSlots() const {
     std::lock_guard<std::mutex> lk(mutex_);
     return (all_slots_.size() >= free_slots_.size()) ? (all_slots_.size() - free_slots_.size()) : 0;
+}
+
+size_t SlotPool::peakActiveSlots() const {
+    return peak_active_slots_.load(std::memory_order_relaxed);
+}
+
+size_t SlotPool::peakActiveSlotsAndReset() {
+    return peak_active_slots_.exchange(0, std::memory_order_relaxed);
 }

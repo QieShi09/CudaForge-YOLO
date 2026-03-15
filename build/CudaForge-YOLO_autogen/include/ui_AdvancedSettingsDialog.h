@@ -103,6 +103,14 @@ public:
     QLabel *m_lblDqPush;
     QLabel *txtDqDrop;
     QLabel *m_lblDqDrop;
+    QWidget *cardDetQueue;
+    QVBoxLayout *vlCardDetQueue;
+    QLabel *titleDetQueue;
+    QFormLayout *formDetQueue;
+    QLabel *txtDetFill;
+    QProgressBar *m_barDetQueue;
+    QLabel *txtDetDetail;
+    QLabel *m_lblDetQueue;
     QWidget *cardWorker;
     QVBoxLayout *vlCardWorker;
     QLabel *titleWorker;
@@ -121,14 +129,6 @@ public:
     QLabel *m_lblCtxPool;
     QSpacerItem *middleSpacer;
     QVBoxLayout *rightColumnLayout;
-    QWidget *cardDetQueue;
-    QVBoxLayout *vlCardDetQueue;
-    QLabel *titleDetQueue;
-    QFormLayout *formDetQueue;
-    QLabel *txtDetFill;
-    QProgressBar *m_barDetQueue;
-    QLabel *txtDetDetail;
-    QLabel *m_lblDetQueue;
     QWidget *cardBottleneck;
     QVBoxLayout *vlCardBottleneck;
     QLabel *titleBottleneck;
@@ -531,6 +531,47 @@ public:
 
         middleColumnLayout->addWidget(cardThroughput);
 
+        cardDetQueue = new QWidget(dashPage);
+        cardDetQueue->setObjectName(QString::fromUtf8("cardDetQueue"));
+        cardDetQueue->setProperty("card", QVariant(true));
+        vlCardDetQueue = new QVBoxLayout(cardDetQueue);
+        vlCardDetQueue->setObjectName(QString::fromUtf8("vlCardDetQueue"));
+        vlCardDetQueue->setContentsMargins(10, 10, 10, 10);
+        titleDetQueue = new QLabel(cardDetQueue);
+        titleDetQueue->setObjectName(QString::fromUtf8("titleDetQueue"));
+
+        vlCardDetQueue->addWidget(titleDetQueue);
+
+        formDetQueue = new QFormLayout();
+        formDetQueue->setObjectName(QString::fromUtf8("formDetQueue"));
+        txtDetFill = new QLabel(cardDetQueue);
+        txtDetFill->setObjectName(QString::fromUtf8("txtDetFill"));
+
+        formDetQueue->setWidget(0, QFormLayout::LabelRole, txtDetFill);
+
+        m_barDetQueue = new QProgressBar(cardDetQueue);
+        m_barDetQueue->setObjectName(QString::fromUtf8("m_barDetQueue"));
+        m_barDetQueue->setMaximum(100);
+        m_barDetQueue->setValue(0);
+
+        formDetQueue->setWidget(0, QFormLayout::FieldRole, m_barDetQueue);
+
+        txtDetDetail = new QLabel(cardDetQueue);
+        txtDetDetail->setObjectName(QString::fromUtf8("txtDetDetail"));
+
+        formDetQueue->setWidget(1, QFormLayout::LabelRole, txtDetDetail);
+
+        m_lblDetQueue = new QLabel(cardDetQueue);
+        m_lblDetQueue->setObjectName(QString::fromUtf8("m_lblDetQueue"));
+
+        formDetQueue->setWidget(1, QFormLayout::FieldRole, m_lblDetQueue);
+
+
+        vlCardDetQueue->addLayout(formDetQueue);
+
+
+        middleColumnLayout->addWidget(cardDetQueue);
+
         cardWorker = new QWidget(dashPage);
         cardWorker->setObjectName(QString::fromUtf8("cardWorker"));
         cardWorker->setProperty("card", QVariant(true));
@@ -620,47 +661,6 @@ public:
         rightColumnLayout = new QVBoxLayout();
         rightColumnLayout->setSpacing(10);
         rightColumnLayout->setObjectName(QString::fromUtf8("rightColumnLayout"));
-        cardDetQueue = new QWidget(dashPage);
-        cardDetQueue->setObjectName(QString::fromUtf8("cardDetQueue"));
-        cardDetQueue->setProperty("card", QVariant(true));
-        vlCardDetQueue = new QVBoxLayout(cardDetQueue);
-        vlCardDetQueue->setObjectName(QString::fromUtf8("vlCardDetQueue"));
-        vlCardDetQueue->setContentsMargins(10, 10, 10, 10);
-        titleDetQueue = new QLabel(cardDetQueue);
-        titleDetQueue->setObjectName(QString::fromUtf8("titleDetQueue"));
-
-        vlCardDetQueue->addWidget(titleDetQueue);
-
-        formDetQueue = new QFormLayout();
-        formDetQueue->setObjectName(QString::fromUtf8("formDetQueue"));
-        txtDetFill = new QLabel(cardDetQueue);
-        txtDetFill->setObjectName(QString::fromUtf8("txtDetFill"));
-
-        formDetQueue->setWidget(0, QFormLayout::LabelRole, txtDetFill);
-
-        m_barDetQueue = new QProgressBar(cardDetQueue);
-        m_barDetQueue->setObjectName(QString::fromUtf8("m_barDetQueue"));
-        m_barDetQueue->setMaximum(100);
-        m_barDetQueue->setValue(0);
-
-        formDetQueue->setWidget(0, QFormLayout::FieldRole, m_barDetQueue);
-
-        txtDetDetail = new QLabel(cardDetQueue);
-        txtDetDetail->setObjectName(QString::fromUtf8("txtDetDetail"));
-
-        formDetQueue->setWidget(1, QFormLayout::LabelRole, txtDetDetail);
-
-        m_lblDetQueue = new QLabel(cardDetQueue);
-        m_lblDetQueue->setObjectName(QString::fromUtf8("m_lblDetQueue"));
-
-        formDetQueue->setWidget(1, QFormLayout::FieldRole, m_lblDetQueue);
-
-
-        vlCardDetQueue->addLayout(formDetQueue);
-
-
-        rightColumnLayout->addWidget(cardDetQueue);
-
         cardBottleneck = new QWidget(dashPage);
         cardBottleneck->setObjectName(QString::fromUtf8("cardBottleneck"));
         cardBottleneck->setProperty("card", QVariant(true));
@@ -1075,6 +1075,13 @@ public:
         txtDqDrop->setText(QCoreApplication::translate("AdvancedSettingsDialog", "SlotQ Dropped / \344\270\242\345\270\247:", nullptr));
         txtDqDrop->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "rowTitle", nullptr)));
         m_lblDqDrop->setText(QCoreApplication::translate("AdvancedSettingsDialog", "0", nullptr));
+        titleDetQueue->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Slot Queue / \346\247\275\351\230\237\345\210\227", nullptr));
+        titleDetQueue->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "cardTitle", nullptr)));
+        txtDetFill->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Fill / \345\241\253\345\205\205\347\216\207:", nullptr));
+        txtDetFill->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "rowTitle", nullptr)));
+        txtDetDetail->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Detail / \350\257\246\346\203\205:", nullptr));
+        txtDetDetail->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "rowTitle", nullptr)));
+        m_lblDetQueue->setText(QCoreApplication::translate("AdvancedSettingsDialog", "-- / --", nullptr));
         titleWorker->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Worker Efficiency / \346\216\250\347\220\206\347\272\277\347\250\213\346\225\210\347\216\207", nullptr));
         titleWorker->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "cardTitle", nullptr)));
         txtIdle->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Idle / \347\251\272\351\227\262\347\216\207:", nullptr));
@@ -1095,13 +1102,6 @@ public:
         txtCtx->setText(QCoreApplication::translate("AdvancedSettingsDialog", "TRT Ctx Pool / \344\270\212\344\270\213\346\226\207\346\261\240:", nullptr));
         txtCtx->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "rowTitle", nullptr)));
         m_lblCtxPool->setText(QCoreApplication::translate("AdvancedSettingsDialog", "--", nullptr));
-        titleDetQueue->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Slot Queue / \346\247\275\351\230\237\345\210\227", nullptr));
-        titleDetQueue->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "cardTitle", nullptr)));
-        txtDetFill->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Fill / \345\241\253\345\205\205\347\216\207:", nullptr));
-        txtDetFill->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "rowTitle", nullptr)));
-        txtDetDetail->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Detail / \350\257\246\346\203\205:", nullptr));
-        txtDetDetail->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "rowTitle", nullptr)));
-        m_lblDetQueue->setText(QCoreApplication::translate("AdvancedSettingsDialog", "-- / --", nullptr));
         titleBottleneck->setText(QCoreApplication::translate("AdvancedSettingsDialog", "Bottleneck / \347\223\266\351\242\210\345\210\206\346\236\220", nullptr));
         titleBottleneck->setProperty("role", QVariant(QCoreApplication::translate("AdvancedSettingsDialog", "cardTitle", nullptr)));
         m_lblBottleneck->setText(QCoreApplication::translate("AdvancedSettingsDialog", "--", nullptr));

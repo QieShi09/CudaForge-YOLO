@@ -21,10 +21,40 @@ extern "C" {
 #include <libavutil/imgutils.h>
 }
 
+static void cuda_buf_free(void* opaque, uint8_t* data);
+
 namespace {
 struct CudaBufMeta {
     size_t bytes = 0;
 };
+
+AVFrame* make_cuda_rgba_frame(uint8_t* dev_rgba, int width, int height, size_t bytes) {
+    if (!dev_rgba || width <= 0 || height <= 0 || bytes == 0) return nullptr;
+
+    AVFrame* frame = av_frame_alloc();
+    if (!frame) return nullptr;
+
+    frame->format = AV_PIX_FMT_CUDA;
+    frame->width = width;
+    frame->height = height;
+
+    CudaBufMeta* meta = new CudaBufMeta();
+    meta->bytes = bytes;
+    frame->buf[0] = av_buffer_create(dev_rgba, static_cast<int>(bytes), cuda_buf_free, meta, 0);
+    if (!frame->buf[0]) {
+        delete meta;
+        av_frame_free(&frame);
+        cudaFree(dev_rgba);
+        return nullptr;
+    }
+
+    VideoDecoder::registerStandaloneFrameAlloc(bytes);
+    frame->data[0] = dev_rgba;
+    frame->data[1] = nullptr;
+    frame->linesize[0] = width * 4;
+    frame->linesize[1] = 0;
+    return frame;
+}
 }
 
 // CUDA 缓冲区释放回调，供 AVBufferRef 引用计数归零时调用
@@ -78,6 +108,181 @@ int VideoDecoder::maxHwDecoders() {
     // 默认 16，可通过 CUDAFORGE_MAX_HW_DECODERS 覆盖（0 = 无限制）
     cached = 16;
     return cached;
+}
+
+bool VideoDecoder::enqueueDetectionTensorFromNV12Frame(const AVFrame* frame)
+{
+    if (!frame || !frame->data[0] || !frame->data[1]) return false;
+
+    int model_w = TRTDetector::getInstance().getInputW();
+    int model_h = TRTDetector::getInstance().getInputH();
+    if (model_w <= 0 || model_h <= 0) return false;
+
+    float r = std::min(static_cast<float>(model_w) / frame->width,
+                       static_cast<float>(model_h) / frame->height);
+    int new_w = static_cast<int>(frame->width * r);
+    int new_h = static_cast<int>(frame->height * r);
+    Slot::PreprocMeta meta;
+    meta.orig_w = frame->width;
+    meta.orig_h = frame->height;
+    meta.scale = r;
+    meta.pad_w = (model_w - new_w) / 2;
+    meta.pad_h = (model_h - new_h) / 2;
+
+    bool pushed = InputFrameArenaStore::getInstance().pushFrame(
+        channel_id_, channel_epoch_,
+        frame->pts > 0 ? static_cast<int64_t>(frame->pts) : 0,
+        meta,
+        det_upload_stream_ ? det_upload_stream_ : static_cast<cudaStream_t>(0),
+        [frame, model_w, model_h](void* dst, size_t bytes, cudaStream_t stream) -> bool {
+            size_t need = static_cast<size_t>(3) * model_w * model_h * sizeof(float);
+            if (!dst || bytes < need) return false;
+            launchNV12ToFloatNCHWDevice(
+                reinterpret_cast<const uint8_t*>(frame->data[0]),
+                reinterpret_cast<const uint8_t*>(frame->data[1]),
+                frame->linesize[0],
+                frame->linesize[1],
+                frame->width,
+                frame->height,
+                static_cast<float*>(dst),
+                model_w,
+                model_h,
+                stream);
+            return true;
+        });
+
+    if (!pushed) {
+        PipelineStats::getInstance().frames_dropped_dq.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+
+    PipelineStats::getInstance().frames_pushed_dq.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+bool VideoDecoder::enqueueDetectionTensorFromRGBA(const uint8_t* dev_rgba, int width, int height, int pitch)
+{
+    if (!dev_rgba || width <= 0 || height <= 0 || pitch <= 0) return false;
+
+    int model_w = TRTDetector::getInstance().getInputW();
+    int model_h = TRTDetector::getInstance().getInputH();
+    if (model_w <= 0 || model_h <= 0) return false;
+
+    float r = std::min(static_cast<float>(model_w) / width,
+                       static_cast<float>(model_h) / height);
+    int new_w = static_cast<int>(width * r);
+    int new_h = static_cast<int>(height * r);
+    Slot::PreprocMeta meta;
+    meta.orig_w = width;
+    meta.orig_h = height;
+    meta.scale = r;
+    meta.pad_w = (model_w - new_w) / 2;
+    meta.pad_h = (model_h - new_h) / 2;
+
+    bool pushed = InputFrameArenaStore::getInstance().pushFrame(
+        channel_id_, channel_epoch_, 0,
+        meta,
+        det_upload_stream_ ? det_upload_stream_ : static_cast<cudaStream_t>(0),
+        [dev_rgba, pitch, width, height, model_w, model_h](void* dst, size_t bytes, cudaStream_t stream) -> bool {
+            size_t need = static_cast<size_t>(3) * model_w * model_h * sizeof(float);
+            if (!dst || bytes < need) return false;
+            launchResizeLetterboxToFloatNCHW(
+                dev_rgba,
+                pitch,
+                width,
+                height,
+                static_cast<float*>(dst),
+                model_w,
+                model_h,
+                stream);
+            return true;
+        });
+
+    if (!pushed) {
+        PipelineStats::getInstance().frames_dropped_dq.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+
+    PipelineStats::getInstance().frames_pushed_dq.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+bool VideoDecoder::processImageSource()
+{
+    QImage image(QString::fromStdString(url_));
+    if (image.isNull()) {
+        fprintf(stderr, "[VideoDecoder] ch=%d: failed to load image: %s\n", channel_id_, url_.c_str());
+        return false;
+    }
+
+    QImage rgba = image.convertToFormat(QImage::Format_RGBA8888);
+    if (rgba.isNull()) {
+        fprintf(stderr, "[VideoDecoder] ch=%d: failed to convert image to RGBA: %s\n", channel_id_, url_.c_str());
+        return false;
+    }
+
+    const int width = rgba.width();
+    const int height = rgba.height();
+    const int pitch = rgba.bytesPerLine();
+    const size_t rgba_bytes = static_cast<size_t>(pitch) * height;
+
+    uint8_t* det_rgba = nullptr;
+    cudaError_t det_alloc = cudaMalloc(&det_rgba, rgba_bytes);
+    if (det_alloc != cudaSuccess) {
+        fprintf(stderr, "[VideoDecoder] ch=%d: cudaMalloc image detect buffer failed: %s\n",
+                channel_id_, cudaGetErrorString(det_alloc));
+        return false;
+    }
+    cudaError_t det_copy = cudaMemcpy2D(det_rgba, pitch,
+                                        rgba.constBits(), pitch,
+                                        pitch, height, cudaMemcpyHostToDevice);
+    if (det_copy != cudaSuccess) {
+        fprintf(stderr, "[VideoDecoder] ch=%d: image upload for detect failed: %s\n",
+                channel_id_, cudaGetErrorString(det_copy));
+        cudaFree(det_rgba);
+        return false;
+    }
+
+    if (InputFrameArenaStore::getInstance().isChannelEnabled(channel_id_)) {
+        enqueueDetectionTensorFromRGBA(det_rgba, width, height, pitch);
+        if (det_upload_stream_) {
+            cudaStreamSynchronize(det_upload_stream_);
+        }
+    }
+    cudaFree(det_rgba);
+
+    uint8_t* disp_rgba = nullptr;
+    cudaError_t disp_alloc = cudaMalloc(&disp_rgba, rgba_bytes);
+    if (disp_alloc != cudaSuccess) {
+        fprintf(stderr, "[VideoDecoder] ch=%d: cudaMalloc image display buffer failed: %s\n",
+                channel_id_, cudaGetErrorString(disp_alloc));
+        return false;
+    }
+    cudaError_t disp_copy = cudaMemcpy2D(disp_rgba, pitch,
+                                         rgba.constBits(), pitch,
+                                         pitch, height, cudaMemcpyHostToDevice);
+    if (disp_copy != cudaSuccess) {
+        fprintf(stderr, "[VideoDecoder] ch=%d: image upload for display failed: %s\n",
+                channel_id_, cudaGetErrorString(disp_copy));
+        cudaFree(disp_rgba);
+        return false;
+    }
+
+    AVFrame* image_frame = make_cuda_rgba_frame(disp_rgba, width, height, rgba_bytes);
+    if (!image_frame) {
+        return false;
+    }
+    image_frame->pts = 0;
+
+    PipelineStats::getInstance().frames_decoded.fetch_add(1, std::memory_order_relaxed);
+    bool fq_ok = frame_queue_ ? frame_queue_->pushDropOldest(image_frame) : false;
+    if (!fq_ok) {
+        av_frame_free(&image_frame);
+        PipelineStats::getInstance().frames_dropped_fq.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    PipelineStats::getInstance().frames_pushed_fq.fetch_add(1, std::memory_order_relaxed);
+    return true;
 }
 
 VideoDecoder::VideoDecoder(const std::string &url, int channel_id, FrameQueue *frame_queue, QObject *parent)
@@ -190,6 +395,17 @@ void VideoDecoder::setTargetFPS(int fps)
         upper_bound = std::max(upper_bound, fps);
     }
     target_fps_ = std::clamp(fps, 5, upper_bound);
+}
+
+void VideoDecoder::setAllowOverNativeFPS(bool allow)
+{
+    allow_over_native_fps_.store(allow, std::memory_order_relaxed);
+    
+    // allow=true 用于压测：允许 setTargetFPS 设置超过源帧率的值。
+    // allow=false 常规行为：setTargetFPS 被限制在源帧率以内。
+    // 注意：不再关闭 Demuxer 的节流，Demuxer 应始终根据 speed 进行节流，
+    // 以防止文件读取速度完全失控导致队列溢出或 CPU 占满。
+    // 如果需要极限性能测试，应通过 setSpeed 设置极大的倍速。
 }
 
 double VideoDecoder::getNativeFPS()
@@ -399,6 +615,11 @@ void VideoDecoder::startDecoding()
         if (cudaStreamCreateWithFlags(&det_upload_stream_, cudaStreamNonBlocking) != cudaSuccess) {
             det_upload_stream_ = nullptr;
         }
+    }
+
+    if (is_image_mode_) {
+        processImageSource();
+        return;
     }
 
     // 1. 初始化硬件 (CUDA)
@@ -788,58 +1009,10 @@ void VideoDecoder::startDecoding()
                     PipelineStats::getInstance().frames_pushed_fq.fetch_add(1, std::memory_order_relaxed);
 
                     // 仅在 FrameQueue push 成功后才尝试推入输入 Arena
-                    // 从原始 frame 克隆而非 frame_clone，因为 frame_clone 已被
-                    //        push 到 FrameQueue，DisplayWorker 可能在另一线程中已释放它
+                    // 直接在源侧完成颜色转换 + resize + letterbox，避免先做一次 NV12 letterbox，
+                    // Worker 再重复做一次预处理。
                     if (InputFrameArenaStore::getInstance().isChannelEnabled(channel_id_)) {
-                        int model_w = TRTDetector::getInstance().getInputW();
-                        int model_h = TRTDetector::getInstance().getInputH();
-                        if (model_w > 0 && model_h > 0 && frame->data[0] && frame->data[1]) {
-                            float r = std::min(static_cast<float>(model_w) / frame->width,
-                                               static_cast<float>(model_h) / frame->height);
-                            int new_w = static_cast<int>(frame->width * r);
-                            int new_h = static_cast<int>(frame->height * r);
-                            Slot::PreprocMeta meta;
-                            meta.orig_w = frame->width;
-                            meta.orig_h = frame->height;
-                            meta.scale = r;
-                            meta.pad_w = (model_w - new_w) / 2;
-                            meta.pad_h = (model_h - new_h) / 2;
-
-                            bool pushed = InputFrameArenaStore::getInstance().pushFrame(
-                                channel_id_, channel_epoch_,
-                                frame->pts > 0 ? static_cast<int64_t>(frame->pts) : 0,
-                                meta,
-                                det_upload_stream_ ? det_upload_stream_ : static_cast<cudaStream_t>(0),
-                                [frame, model_w, model_h](uint8_t* dst_y, uint8_t* dst_uv, int dst_pitch, cudaStream_t stream) -> bool {
-                                    if (!dst_y || !dst_uv) return false;
-                                    launchResizeNV12ToNV12Device(
-                                        reinterpret_cast<const uint8_t*>(frame->data[0]),
-                                        reinterpret_cast<const uint8_t*>(frame->data[1]),
-                                        frame->linesize[0],
-                                        frame->linesize[1],
-                                        frame->width,
-                                        frame->height,
-                                        dst_y,
-                                        dst_uv,
-                                        dst_pitch,
-                                        dst_pitch,
-                                        model_w,
-                                        model_h,
-                                        stream);
-                                    return true;
-                                });
-                            if (!pushed) {
-                                PipelineStats::getInstance().frames_dropped_dq.fetch_add(1, std::memory_order_relaxed);
-                            } else {
-                                PipelineStats::getInstance().frames_pushed_dq.fetch_add(1, std::memory_order_relaxed);
-                                if (is_image_mode_) {
-                                    fprintf(stderr, "[VideoDecoder] Image frame appended to input arena (ch=%d, %dx%d)\n",
-                                            channel_id_, frame->width, frame->height);
-                                }
-                            }
-                        } else {
-                            PipelineStats::getInstance().frames_dropped_dq.fetch_add(1, std::memory_order_relaxed);
-                        }
+                        enqueueDetectionTensorFromNV12Frame(frame);
                     } else if (is_image_mode_) {
                         fprintf(stderr, "[VideoDecoder] WARNING: Image ch=%d detection channel disabled, frame NOT pushed to input arena\n",
                                 channel_id_);

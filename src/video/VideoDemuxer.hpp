@@ -24,6 +24,7 @@ public:
     AVRational getTimeBase();    // 获取时间基
     bool isOpen() const;         // 是否已打开输入
     void setSpeed(float speed);  // 设置播放速率
+    void setPacingEnabled(bool enabled); // 是否按源帧率节流读取
     bool isEOF() const { return is_eof_.load(); } // 是否已结束
     void resetEOF();             // 重置 EOF 状态（用于 seek/replay）
     void setPaused(bool paused); // 暂停/恢复读取
@@ -42,6 +43,7 @@ private:
     std::atomic<bool> is_running_{false};
     std::atomic<bool> abort_request_{false}; // 强制中止标志
     std::atomic<float> speed_{1.0f};         // 播放速率
+    std::atomic<bool> pacing_enabled_{true}; // 是否启用按帧率节流
     std::atomic<bool> is_eof_{false};        // 是否已结束
     std::atomic<bool> is_paused_{false};     // 暂停标志
 };

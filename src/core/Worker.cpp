@@ -61,7 +61,10 @@ void Worker::run() {
         }
 
         Slot* slot = SlotPool::getInstance().pop();
-        if (!slot) continue;
+        if (!slot) {
+            PipelineStats::getInstance().worker_no_slot.fetch_add(1, std::memory_order_relaxed);
+            continue;
+        }
 
         slot->clear();
         for (size_t i = 0; i < samples.size(); ++i) {
@@ -80,6 +83,7 @@ void Worker::run() {
         // 使用 worker 持有的 stream 提交异步推理（复用）
         cudaStream_t stream = trt_worker_ ? trt_worker_->stream() : nullptr;
         if (!stream) {
+            PipelineStats::getInstance().worker_no_stream.fetch_add(1, std::memory_order_relaxed);
             InputFrameArenaStore::getInstance().releaseBatchNow(samples);
             SlotPool::getInstance().push(slot);
             continue;
@@ -109,6 +113,10 @@ void Worker::run() {
         int model_w = TRTDetector::getInstance().getInputW();
         int model_h = TRTDetector::getInstance().getInputH();
         size_t per_sample_bytes = static_cast<size_t>(3) * model_w * model_h * sizeof(float);
+        size_t output_bytes_per_frame = TRTDetector::getInstance().getOutputBytesPerFrame();
+        if (output_bytes_per_frame == 0) {
+            output_bytes_per_frame = TRTDetector::getInstance().getOutputBytesPerBatch();
+        }
         int detector_max_batch = TRTDetector::getInstance().getMaxBatch();
         if (detector_max_batch <= 0) detector_max_batch = 1;
         int batch_size = std::min(static_cast<int>(samples.size()), detector_max_batch);
@@ -120,10 +128,16 @@ void Worker::run() {
         }
 
         size_t input_bytes = static_cast<size_t>(batch_size) * per_sample_bytes;
-        size_t output_bytes = TRTDetector::getInstance().getOutputBytesPerBatch() * static_cast<size_t>(batch_size);
+        size_t output_bytes = output_bytes_per_frame * static_cast<size_t>(batch_size);
         void* dev_in = TensorArenaManager::getInstance().allocateInput(input_bytes);
         void* dev_out = TensorArenaManager::getInstance().allocateOutput(output_bytes);
         if (!dev_in || !dev_out) {
+            if (!dev_in) {
+                PipelineStats::getInstance().worker_alloc_input_fail.fetch_add(1, std::memory_order_relaxed);
+            }
+            if (!dev_out) {
+                PipelineStats::getInstance().worker_alloc_output_fail.fetch_add(1, std::memory_order_relaxed);
+            }
             if (dev_in) TensorArenaManager::getInstance().deallocateInput(dev_in, input_bytes);
             if (dev_out) TensorArenaManager::getInstance().deallocateOutput(dev_out, output_bytes);
             InputFrameArenaStore::getInstance().releaseBatchNow(samples);
@@ -138,25 +152,30 @@ void Worker::run() {
             auto preprocessRange = nvtxutil::ScopedRange(
                 nvtxutil::makeWorkerLabel("Preprocess", id_, batch_size),
                 nvtxutil::color::Preprocess);
+            bool copy_failed = false;
             for (int i = 0; i < batch_size; ++i) {
                 const auto& sm = samples[static_cast<size_t>(i)];
+                if (!sm.ptr || sm.bytes < per_sample_bytes) {
+                    copy_failed = true;
+                    break;
+                }
                 if (sm.ready_event) {
                     cudaStreamWaitEvent(stream, sm.ready_event, 0);
                 }
-                uint8_t* src_y = reinterpret_cast<uint8_t*>(sm.ptr);
-                uint8_t* src_uv = src_y + static_cast<size_t>(model_w) * model_h;
-                float* dst_ptr = reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(dev_in) + static_cast<size_t>(i) * per_sample_bytes);
-                launchNV12ToFloatNCHWDevice(
-                    src_y,
-                    src_uv,
-                    model_w,
-                    model_w,
-                    model_w,
-                    model_h,
-                    dst_ptr,
-                    model_w,
-                    model_h,
-                    stream);
+                uint8_t* dst_ptr = reinterpret_cast<uint8_t*>(dev_in) + static_cast<size_t>(i) * per_sample_bytes;
+                if (cudaMemcpyAsync(dst_ptr, sm.ptr, per_sample_bytes, cudaMemcpyDeviceToDevice, stream) != cudaSuccess) {
+                    copy_failed = true;
+                    break;
+                }
+            }
+            if (copy_failed) {
+                PipelineStats::getInstance().worker_submit_fail.fetch_add(1, std::memory_order_relaxed);
+                TensorArenaManager::getInstance().deallocateInput(dev_in, input_bytes);
+                TensorArenaManager::getInstance().deallocateOutput(dev_out, output_bytes);
+                InputFrameArenaStore::getInstance().releaseBatchNow(samples);
+                SlotPool::getInstance().push(slot);
+                destroy_timing_events(ev_pre_start, ev_pre_end, ev_inf_start, ev_inf_end);
+                continue;
             }
         }
 
@@ -219,6 +238,7 @@ void Worker::run() {
         }
 
         if (!ok) {
+            PipelineStats::getInstance().worker_submit_fail.fetch_add(1, std::memory_order_relaxed);
             static std::atomic<uint64_t> s_submit_fail_count{0};
             uint64_t fail_n = s_submit_fail_count.fetch_add(1, std::memory_order_relaxed) + 1;
             if (fail_n % 50 == 1) {

@@ -6,6 +6,7 @@
 #include <vector>
 #include <memory>
 #include <iostream>
+#include <algorithm>
 #include "Slot.hpp"
 #include <mutex>
 #include <deque>
@@ -15,6 +16,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <unordered_map>
 
 /**
  * @brief TRTDetector (单例/共享资源类)
@@ -44,6 +46,7 @@ public:
      * 所以每个并发的 Inference Worker 必须通过此接口持有一个私有实例。
      */
     nvinfer1::IExecutionContext* createContext();
+    void destroyContext(nvinfer1::IExecutionContext* context);
 
     // 异步推理：使用提供的 CUDA stream 在 stream 完成时回调
     // cb(slot, success)
@@ -57,6 +60,27 @@ public:
     // 统计：当前创建的 context 总数（创建-销毁）
     int getContextTotalCount() const {
         return ctx_created_.load(std::memory_order_relaxed);
+    }
+    int getContextActiveCount() const {
+        return ctx_alive_.load(std::memory_order_relaxed);
+    }
+    size_t getContextActiveBytes() const {
+        return ctx_active_bytes_.load(std::memory_order_relaxed);
+    }
+    size_t getTrtRuntimeBytes() const {
+        return trt_runtime_bytes_.load(std::memory_order_relaxed);
+    }
+    void setConfidenceThreshold(float threshold) {
+        conf_threshold_.store(std::clamp(threshold, 0.0f, 1.0f), std::memory_order_relaxed);
+    }
+    float getConfidenceThreshold() const {
+        return conf_threshold_.load(std::memory_order_relaxed);
+    }
+    void setNmsIouThreshold(float threshold) {
+        nms_iou_threshold_.store(std::clamp(threshold, 0.05f, 0.95f), std::memory_order_relaxed);
+    }
+    float getNmsIouThreshold() const {
+        return nms_iou_threshold_.load(std::memory_order_relaxed);
     }
 
     /**
@@ -74,6 +98,13 @@ public:
     size_t getOutputSize() const { return output_size_bytes_; }
     int getMaxBatch() const { return max_batch_; }
     size_t getOutputBytesPerBatch() const { return output_bytes_per_batch_; }
+    size_t getOutputBytesPerFrame() const {
+        int mb = std::max(1, max_batch_);
+        if (output_size_bytes_ == 0) return 0;
+        size_t per = output_size_bytes_ / static_cast<size_t>(mb);
+        if (per == 0) return output_size_bytes_;
+        return per;
+    }
 
     // 解析检测结果：基于独立 host 输出缓冲
     // 假设输出格式为 [batch, num_boxes, 6]，每个box: [x,y,w,h,conf,class]
@@ -128,6 +159,13 @@ private:
     int output_box_size_ = 0;
 
     std::atomic<int> ctx_created_{0};
+    std::atomic<int> ctx_alive_{0};
+    std::atomic<size_t> ctx_active_bytes_{0};
+    std::atomic<size_t> trt_runtime_bytes_{0};
+    std::atomic<float> conf_threshold_{0.55f};
+    std::atomic<float> nms_iou_threshold_{0.45f};
+    mutable std::mutex ctx_mem_mutex_;
+    std::unordered_map<nvinfer1::IExecutionContext*, size_t> ctx_mem_bytes_;
     std::atomic<bool> shutting_down_{false};
 
     // 异步推理回调 in-flight 计数器：shutdown 前必须等待归零

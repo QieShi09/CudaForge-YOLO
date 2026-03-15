@@ -12,10 +12,16 @@
 
 // 静态成员：类别名称文件路径
 QString VideoWidget::s_classesFilePath = "src/engines/class.txt";
+float VideoWidget::s_displayConfThreshold = 0.55f;
 
 void VideoWidget::setClassesFilePath(const QString& path)
 {
     s_classesFilePath = path;
+}
+
+void VideoWidget::setDisplayConfidenceThreshold(float threshold)
+{
+    s_displayConfThreshold = std::clamp(threshold, 0.0f, 1.0f);
 }
 
 VideoWidget::VideoWidget(QWidget *parent)
@@ -583,6 +589,7 @@ void VideoWidget::paintGL()
             }
 
             for (const auto& d : dets) {
+                if (d.conf < s_displayConfThreshold) continue;
                 if (d.w <= 0.0f || d.h <= 0.0f) continue;
                 QRectF rect(d.x * scaleX, d.y * scaleY, d.w * scaleX, d.h * scaleY);
                 painter.drawRect(rect);

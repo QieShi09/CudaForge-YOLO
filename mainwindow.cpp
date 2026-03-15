@@ -111,11 +111,18 @@ MainWindow::MainWindow(QWidget *parent)
         auto s = AdvancedSettingsDialog::loadFromDisk();
         m_baseSlots       = s.baseSlots;
         m_inputArenaFrames = std::max(16, s.inputArenaFrames);
+        m_outputArenaFrames = std::max(16, s.outputArenaFrames);
         m_inferenceStreams = std::max(1, s.inferenceStreams);
         m_workerMaxBatch  = s.workerMaxBatch;
         m_modelPath       = s.modelPath;
         m_classesPath     = s.classesPath;
+        m_displayConfThreshold = std::clamp(s.displayConfThreshold, 0.01, 1.0);
     }
+
+    VideoWidget::setClassesFilePath(m_classesPath);
+    VideoWidget::setDisplayConfidenceThreshold(static_cast<float>(m_displayConfThreshold));
+    TRTDetector::getInstance().setConfidenceThreshold(static_cast<float>(m_displayConfThreshold));
+    TRTDetector::getInstance().setNmsIouThreshold(0.45f);
 
     // 高级设置按钮（动态添加到 btn_stop 后面）
     {
@@ -1255,12 +1262,21 @@ void MainWindow::startDetection()
         int model_h = TRTDetector::getInstance().getInputH();
         int effectiveBatch = std::min(m_workerMaxBatch, TRTDetector::getInstance().getMaxBatch());
         int input_frames = std::max(16, m_inputArenaFrames);
-        size_t desiredSlots = static_cast<size_t>(std::clamp((input_frames + std::max(1, effectiveBatch) - 1) / std::max(1, effectiveBatch) * 2,
-                                     16, 256));
-        size_t input_bytes_per_slot = static_cast<size_t>(effectiveBatch) * 3 * model_w * model_h * sizeof(float);
-        size_t output_bytes_per_slot = TRTDetector::getInstance().getOutputBytesPerBatch() * static_cast<size_t>(effectiveBatch);
-        size_t input_arena_bytes = desiredSlots * input_bytes_per_slot;
-        size_t output_arena_bytes = desiredSlots * output_bytes_per_slot;
+        int output_frames = std::max(16, m_outputArenaFrames);
+        size_t desiredSlots = 512;
+
+        size_t input_bytes_per_frame = static_cast<size_t>(3) * model_w * model_h * sizeof(float);
+        size_t output_bytes_per_frame = TRTDetector::getInstance().getOutputBytesPerFrame();
+        if (output_bytes_per_frame == 0) {
+            int max_batch = std::max(1, TRTDetector::getInstance().getMaxBatch());
+            output_bytes_per_frame = TRTDetector::getInstance().getOutputSize() / static_cast<size_t>(max_batch);
+        }
+        if (output_bytes_per_frame == 0) {
+            logSystemMessage("Invalid detector output bytes per frame.", 2);
+            return;
+        }
+        size_t input_arena_bytes = static_cast<size_t>(input_frames) * input_bytes_per_frame;
+        size_t output_arena_bytes = static_cast<size_t>(output_frames) * output_bytes_per_frame;
 
         if (!SlotPool::getInstance().init(desiredSlots, effectiveBatch)) {
             logSystemMessage("Failed to init SlotPool.", 2);
@@ -1271,8 +1287,8 @@ void MainWindow::startDetection()
             return;
         }
         m_memoryInited = true;
-        logSystemMessage(QString("Tensor arenas ready: slots=%1, inputFrames=%2, effectiveBatch=%3 (worker=%4, model=%5)")
-            .arg(static_cast<int>(desiredSlots)).arg(input_frames).arg(effectiveBatch).arg(m_workerMaxBatch).arg(TRTDetector::getInstance().getMaxBatch()), 0);
+        logSystemMessage(QString("Tensor arenas ready: slots=%1, inputFrames=%2, outputFrames=%3, effectiveBatch=%4")
+            .arg(static_cast<int>(desiredSlots)).arg(input_frames).arg(output_frames).arg(effectiveBatch), 0);
     }
 
     int effectiveBatch = std::min(m_workerMaxBatch, TRTDetector::getInstance().getMaxBatch());
@@ -1281,12 +1297,12 @@ void MainWindow::startDetection()
     {
         int model_w = TRTDetector::getInstance().getInputW();
         int model_h = TRTDetector::getInstance().getInputH();
-        size_t single_frame_nv12 = static_cast<size_t>(model_w) * model_h * 3 / 2;
+        size_t single_input_tensor = static_cast<size_t>(3) * model_w * model_h * sizeof(float);
         int input_frames = std::max(16, m_inputArenaFrames);
-        size_t input_arena_bytes = static_cast<size_t>(input_frames) * single_frame_nv12;
+        size_t input_arena_bytes = static_cast<size_t>(input_frames) * single_input_tensor;
         size_t max_ready_frames = static_cast<size_t>(input_frames);
-        if (!InputFrameArenaStore::getInstance().init(input_arena_bytes, single_frame_nv12,
-                                                      static_cast<size_t>(model_w), max_ready_frames)) {
+        if (!InputFrameArenaStore::getInstance().init(input_arena_bytes, single_input_tensor,
+                                                      max_ready_frames)) {
             logSystemMessage("Failed to init InputFrameArenaStore.", 2);
             return;
         }
@@ -1922,12 +1938,14 @@ void MainWindow::openAdvancedSettings()
     AdvancedSettingsDialog::Settings cur;
     cur.baseSlots      = m_baseSlots;
     cur.inputArenaFrames = m_inputArenaFrames;
+    cur.outputArenaFrames = m_outputArenaFrames;
     cur.workerCount    = std::max(1, m_inferenceStreams);
     cur.inferenceStreams = m_inferenceStreams;
     cur.workerMaxBatch = m_workerMaxBatch;
     cur.modelPath      = m_modelPath;
     cur.classesPath    = m_classesPath;
     cur.statsInterval  = m_pipelineStatsTimer ? m_pipelineStatsTimer->interval() / 1000 : 5;
+    cur.displayConfThreshold = m_displayConfThreshold;
     m_advancedDialog->setSettings(cur);
     m_advancedDialog->show();
     m_advancedDialog->raise();
@@ -1938,9 +1956,11 @@ void MainWindow::applySettings(const AdvancedSettingsDialog::Settings& s)
 {
     m_baseSlots        = s.baseSlots;
     m_inputArenaFrames = std::max(16, s.inputArenaFrames);
+    m_outputArenaFrames = std::max(16, s.outputArenaFrames);
     m_inferenceStreams = std::max(1, s.inferenceStreams);
     m_workerMaxBatch   = s.workerMaxBatch;
     m_modelPath        = s.modelPath;
+    m_displayConfThreshold = std::clamp(s.displayConfThreshold, 0.01, 1.0);
 
     // 如果 classesPath 变更，清空已加载的类别名称以触发重新加载
     if (m_classesPath != s.classesPath) {
@@ -1949,6 +1969,9 @@ void MainWindow::applySettings(const AdvancedSettingsDialog::Settings& s)
         // 同步到 VideoWidget 的静态类别路径，使绘制检测框时使用新路径
         VideoWidget::setClassesFilePath(m_classesPath);
     }
+    VideoWidget::setDisplayConfidenceThreshold(static_cast<float>(m_displayConfThreshold));
+    TRTDetector::getInstance().setConfidenceThreshold(static_cast<float>(m_displayConfThreshold));
+    TRTDetector::getInstance().setNmsIouThreshold(0.45f);
 
     if (m_pipelineStatsTimer) {
         m_pipelineStatsTimer->setInterval(s.statsInterval * 1000);
@@ -1976,9 +1999,11 @@ void MainWindow::applySettings(const AdvancedSettingsDialog::Settings& s)
     }
 
     int effectiveBatch = std::min(m_workerMaxBatch, TRTDetector::getInstance().getMaxBatch());
-    logSystemMessage(QString("Settings applied — slots=%1, parallelWorkers=%2, batch=%3, model=%4")
-        .arg(recommendedSlotCount(effectiveBatch)).arg(std::max(1, s.inferenceStreams))
-        .arg(s.workerMaxBatch).arg(s.modelPath), 0);
+    logSystemMessage(QString("Settings applied — inputFrames=%1, outputFrames=%2, parallelWorkers=%3, batch=%4, conf>= %5, model=%6")
+        .arg(m_inputArenaFrames).arg(m_outputArenaFrames).arg(std::max(1, s.inferenceStreams))
+        .arg(s.workerMaxBatch)
+        .arg(m_displayConfThreshold, 0, 'f', 2)
+        .arg(s.modelPath), 0);
 }
 
 void MainWindow::startChannel(int channel_id)

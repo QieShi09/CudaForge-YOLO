@@ -26,6 +26,8 @@ public:
     size_t totalSlots() const;
     size_t freeSlots() const;
     size_t activeSlots() const;
+    size_t peakActiveSlots() const;
+    size_t peakActiveSlotsAndReset();
 
 private:
     SlotPool() = default;
@@ -38,6 +40,7 @@ private:
     std::vector<std::unique_ptr<Slot>> all_slots_;
     std::deque<Slot*> free_slots_;
     std::atomic<bool> stop_{false};
+    std::atomic<size_t> peak_active_slots_{0};
 };
 
 #endif

@@ -6,6 +6,7 @@
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QSpinBox>
+#include <QDoubleSpinBox>
 #include <QLineEdit>
 #include <QPushButton>
 #include <QLabel>
@@ -22,6 +23,8 @@
 #include <QDateTime>
 #include <QComboBox>
 #include <QDebug>
+#include <QPainter>
+#include <QTextDocumentFragment>
 #include <QMouseEvent>
 #include <QEvent>
 #include <QGraphicsDropShadowEffect>
@@ -55,11 +58,66 @@ extern "C" {
 static constexpr const char* ORG  = "CudaForge";
 static constexpr const char* APP  = "CudaForge-YOLO";
 
+static QString toPlainReportText(const QString& text) {
+    if (text.contains('<') && text.contains('>')) {
+        return QTextDocumentFragment::fromHtml(text).toPlainText().trimmed();
+    }
+    return text;
+}
+
+class ArenaStateBar final : public QWidget {
+public:
+    struct Segment {
+        double begin = 0.0;
+        double end = 0.0;
+        QColor color;
+    };
+
+    explicit ArenaStateBar(QWidget* parent = nullptr) : QWidget(parent) {
+        setMinimumHeight(16);
+        setMaximumHeight(18);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    }
+
+    void setSegments(const std::vector<Segment>& segs) {
+        segments_ = segs;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, false);
+        QRect r = rect().adjusted(0, 0, -1, -1);
+        painter.fillRect(r, QColor("#F8FAFC"));
+
+        const int width = r.width();
+        for (const auto& s : segments_) {
+            if (s.end <= s.begin) {
+                continue;
+            }
+            int x0 = r.left() + static_cast<int>(std::floor(s.begin * width));
+            int x1 = r.left() + static_cast<int>(std::ceil(s.end * width));
+            if (x1 <= x0) {
+                x1 = x0 + 1;
+            }
+            painter.fillRect(QRect(x0, r.top(), x1 - x0, r.height()), s.color);
+        }
+
+        painter.setPen(QColor("#64748B"));
+        painter.drawRect(r);
+    }
+
+private:
+    std::vector<Segment> segments_;
+};
+
 AdvancedSettingsDialog::Settings AdvancedSettingsDialog::defaultSettings()
 {
     Settings s;
     s.baseSlots      = 4;
     s.inputArenaFrames = 200;
+    s.outputArenaFrames = 200;
     s.workerCount    = 2;
     s.inferenceStreams = 2;
     s.workerMaxBatch = 16;
@@ -67,6 +125,7 @@ AdvancedSettingsDialog::Settings AdvancedSettingsDialog::defaultSettings()
     s.modelPath      = "/home/zzx/code/Qt/CudaForge-YOLO/src/engines/yolo26n.engine";
     s.classesPath    = "src/engines/class.txt";
     s.statsInterval  = 5;
+    s.displayConfThreshold = 0.55;
     return s;
 }
 
@@ -77,6 +136,7 @@ AdvancedSettingsDialog::Settings AdvancedSettingsDialog::loadFromDisk()
     Settings s;
     s.baseSlots      = qs.value("baseSlots", def.baseSlots).toInt();
     s.inputArenaFrames = qs.value("inputArenaFrames", def.inputArenaFrames).toInt();
+    s.outputArenaFrames = qs.value("outputArenaFrames", def.outputArenaFrames).toInt();
     s.inferenceStreams = qs.value("inferenceStreams", def.inferenceStreams).toInt();
     s.workerCount    = std::max(1, s.inferenceStreams);
     s.workerMaxBatch = qs.value("workerMaxBatch", def.workerMaxBatch).toInt();
@@ -85,6 +145,7 @@ AdvancedSettingsDialog::Settings AdvancedSettingsDialog::loadFromDisk()
     s.modelPath      = qs.value("modelPath", def.modelPath).toString();
     s.classesPath    = qs.value("classesPath", def.classesPath).toString();
     s.statsInterval  = qs.value("statsInterval", def.statsInterval).toInt();
+    s.displayConfThreshold = qs.value("displayConfThreshold", def.displayConfThreshold).toDouble();
     return s;
 }
 
@@ -93,6 +154,7 @@ void AdvancedSettingsDialog::saveToDisk(const Settings& s)
     QSettings qs(ORG, APP);
     qs.setValue("baseSlots", s.baseSlots);
     qs.setValue("inputArenaFrames", s.inputArenaFrames);
+    qs.setValue("outputArenaFrames", s.outputArenaFrames);
     qs.setValue("workerCount", std::max(1, s.inferenceStreams));
     qs.setValue("inferenceStreams", std::max(1, s.inferenceStreams));
     qs.setValue("workerMaxBatch", s.workerMaxBatch);
@@ -100,6 +162,7 @@ void AdvancedSettingsDialog::saveToDisk(const Settings& s)
     qs.setValue("modelPath", s.modelPath);
     qs.setValue("classesPath", s.classesPath);
     qs.setValue("statsInterval", s.statsInterval);
+    qs.setValue("displayConfThreshold", s.displayConfThreshold);
     qs.sync();
 }
 
@@ -113,8 +176,8 @@ AdvancedSettingsDialog::AdvancedSettingsDialog(QWidget *parent)
     flags &= ~Qt::WindowContextHelpButtonHint;
     setWindowFlags(flags);
     setWindowTitle("Advanced Settings");
-    setMinimumSize(640, 420);
-    resize(980, 680);
+    setMinimumSize(900, 620);
+    resize(1280, 820);
     buildUI();
 
     m_dashTimer = new QTimer(this);
@@ -369,6 +432,34 @@ void AdvancedSettingsDialog::buildUI()
     m_spinLoadFps     = req(static_cast<QSpinBox*>(nullptr), "m_spinLoadFps");
     m_spinLoadDuration= req(static_cast<QSpinBox*>(nullptr), "m_spinLoadDuration");
 
+    if (auto *paramsForm = this->findChild<QFormLayout*>("formPipelineParams")) {
+        m_spinDisplayConf = new QDoubleSpinBox(this);
+        m_spinDisplayConf->setRange(0.01, 1.00);
+        m_spinDisplayConf->setSingleStep(0.01);
+        m_spinDisplayConf->setDecimals(2);
+        m_spinDisplayConf->setValue(0.55);
+        m_spinDisplayConf->setToolTip("Display/filter confidence threshold for detections.");
+        auto *lbl = new QLabel("Display Conf / 显示置信度:", this);
+        lbl->setProperty("role", "rowTitle");
+        paramsForm->insertRow(6, lbl, m_spinDisplayConf);
+    }
+
+    if (auto *arenaForm = this->findChild<QFormLayout*>("formArena")) {
+        m_barInputArenaState = new ArenaStateBar(this);
+        m_barOutputArenaState = new ArenaStateBar(this);
+        m_lblInputArenaStates = new QLabel("--", this);
+        m_lblOutputArenaStates = new QLabel("--", this);
+        m_lblInputArenaStates->setWordWrap(true);
+        m_lblOutputArenaStates->setWordWrap(true);
+        m_lblInputArenaStates->setStyleSheet("QLabel { color:#475569; font-size:11px; }");
+        m_lblOutputArenaStates->setStyleSheet("QLabel { color:#475569; font-size:11px; }");
+
+        arenaForm->insertRow(1, new QLabel("Input Regions:", this), m_barInputArenaState);
+        arenaForm->insertRow(2, new QLabel("Input States:", this), m_lblInputArenaStates);
+        arenaForm->insertRow(4, new QLabel("Output Regions:", this), m_barOutputArenaState);
+        arenaForm->insertRow(5, new QLabel("Output States:", this), m_lblOutputArenaStates);
+    }
+
     // 并行度参数统一：Worker 数与推理并行数绑定，不再单独开放 Worker Count
     m_spinWorkerCount->setMinimum(1);
     m_spinWorkerCount->setMaximum(1);
@@ -386,21 +477,18 @@ void AdvancedSettingsDialog::buildUI()
     m_spinSlots->setSingleStep(16);
     m_spinSlots->setToolTip("Input arena frames");
 
-    // context 数固定为 1（不再使用 detector context pool）
-    m_spinContextPool->setMinimum(1);
-    m_spinContextPool->setMaximum(1);
-    m_spinContextPool->setValue(1);
-    m_spinContextPool->setEnabled(false);
-    m_spinContextPool->setToolTip("Context pool removed; workers own dedicated contexts");
+    // 复用该参数位为 Output Arena 帧数
+    m_spinContextPool->setMinimum(16);
+    m_spinContextPool->setMaximum(2000);
+    m_spinContextPool->setSingleStep(16);
+    m_spinContextPool->setToolTip("Output arena frames");
     m_spinInferenceStreams->setToolTip("Parallel infer workers (1 worker = 1 stream + 1 TRT context)");
     if (auto *ctxLabel = this->findChild<QLabel*>("txtCtxPoolParam")) {
-        ctxLabel->hide();
+        ctxLabel->setText("Output Arena Frames / 输出池帧数:");
     }
-    m_spinContextPool->hide();
     if (auto *ctxRowTitle = this->findChild<QLabel*>("txtCtx")) {
-        ctxRowTitle->hide();
+        ctxRowTitle->setText("Worker Failures / 失败计数:");
     }
-    m_lblCtxPool->hide();
     if (auto *titleDetQueue = this->findChild<QLabel*>("titleDetQueue")) {
         titleDetQueue->setText("Input Ready Queue / 输入就绪队列");
     }
@@ -409,6 +497,9 @@ void AdvancedSettingsDialog::buildUI()
     }
     if (auto *txtDqDrop = this->findChild<QLabel*>("txtDqDrop")) {
         txtDqDrop->setText("Input Dropped / 丢帧:");
+    }
+    if (auto *txtVramOther = this->findChild<QLabel*>("txtVramOther")) {
+        txtVramOther->setText("Residual / 未归因:");
     }
 
     m_titleBar->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
@@ -459,6 +550,8 @@ void AdvancedSettingsDialog::buildUI()
     m_lblDetections->setStyleSheet(bigNum);
     m_lblDqDrop->setStyleSheet(bigNum);
     m_lblDqPush->setStyleSheet(bigNum);
+    m_lblInputArena->setStyleSheet("QLabel { font-family: 'Noto Sans Mono', 'DejaVu Sans Mono', monospace; font-size: 11px; color:#334155; }");
+    m_lblOutputArena->setStyleSheet("QLabel { font-family: 'Noto Sans Mono', 'DejaVu Sans Mono', monospace; font-size: 11px; color:#334155; }");
     m_lblBottleneck->setStyleSheet("QLabel { font-weight: bold; padding: 4px; color: #DC2626; }");
 
     const QString dashboardTitleStyle =
@@ -485,7 +578,7 @@ void AdvancedSettingsDialog::buildUI()
         if (auto *title = this->findChild<QLabel*>(labelName)) {
             title->setFont(dashboardTitleFont);
             title->setStyleSheet(dashboardTitleStyle);
-            title->setMinimumHeight(30);
+            title->setMinimumHeight(24);
         }
     }
 
@@ -493,13 +586,13 @@ void AdvancedSettingsDialog::buildUI()
         cardGpuMem->setToolTip("当前 CUDA 设备的总显存与已用显存。值越高表示 GPU 负载越重。");
     }
     if (auto *cardVram = this->findChild<QWidget*>("cardVram")) {
-        cardVram->setToolTip("显存占用的粗略拆分：Slot、Context、Decoder 估算与其他占用。\n注意：这是估算值，仅用于定位大头。");
+        cardVram->setToolTip("显存闭环拆分：TensorArenas + TRT runtime + active contexts + decoder/display + unknown(used-known)。\nContext 同时显示 active 与 created，便于区分当前占用和历史累计。");
     }
     if (auto *cardSlotPool = this->findChild<QWidget*>("cardSlotPool")) {
         cardSlotPool->setToolTip("SlotPool 管理的推理对象池。每个 Slot 对应一次批处理任务的元数据容器。\nActive 越高表示并发推理更繁忙。");
     }
     if (auto *cardDetQueue = this->findChild<QWidget*>("cardDetQueue")) {
-        cardDetQueue->setToolTip("InputFrameArenaStore 就绪帧队列：解码上传成功后进入 Ready，Worker 取走后转 Inflight。\nFill 越高说明输入积压。 ");
+        cardDetQueue->setToolTip("Input Ready Queue（帧队列，不是 Slot 队列）：解码上传成功后进入 Ready，Worker 取走后进入 Inflight。\nReady 高=输入积压；Inflight 高=在推理流中等待/执行。 ");
     }
     if (auto *cardThroughput = this->findChild<QWidget*>("cardThroughput")) {
         cardThroughput->setToolTip("各阶段每秒处理量。数值为最近采样窗口平均值。");
@@ -528,16 +621,21 @@ void AdvancedSettingsDialog::buildUI()
 
     if (auto *colLayout = this->findChild<QHBoxLayout*>("dashColumnsLayout")) {
         colLayout->setContentsMargins(2, 2, 2, 2);
-        colLayout->setSpacing(10);
+        colLayout->setSpacing(8);
         colLayout->setStretch(0, 1);
         colLayout->setStretch(1, 1);
         colLayout->setStretch(2, 1);
+        colLayout->setSizeConstraint(QLayout::SetDefaultConstraint);
+    }
+
+    if (auto *outer = this->findChild<QVBoxLayout*>("dashOuterLayout")) {
+        outer->setSpacing(6);
     }
 
     auto normalizeCol = [this](const char* layoutName) {
         if (auto *layout = this->findChild<QVBoxLayout*>(layoutName)) {
             layout->setContentsMargins(0, 0, 0, 0);
-            layout->setSpacing(8);
+            layout->setSpacing(6);
         }
     };
     normalizeCol("leftColumnLayout");
@@ -551,7 +649,8 @@ void AdvancedSettingsDialog::buildUI()
     }
     if (auto *midCol = this->findChild<QVBoxLayout*>("middleColumnLayout")) {
         midCol->setStretch(0, 0);
-        midCol->setStretch(1, 1);
+        midCol->setStretch(1, 0);
+        midCol->setStretch(2, 1);
     }
     if (auto *rightCol = this->findChild<QVBoxLayout*>("rightColumnLayout")) {
         rightCol->setStretch(0, 0);
@@ -560,6 +659,9 @@ void AdvancedSettingsDialog::buildUI()
 
     if (auto *cardSlotPool = this->findChild<QWidget*>("cardSlotPool")) {
         cardSlotPool->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+    }
+    if (auto *cardArena = this->findChild<QWidget*>("cardArena")) {
+        cardArena->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     }
     if (auto *cardWorker = this->findChild<QWidget*>("cardWorker")) {
         cardWorker->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
@@ -575,9 +677,34 @@ void AdvancedSettingsDialog::buildUI()
     };
     for (const auto &layoutName : compactCardLayouts) {
         if (auto *layout = this->findChild<QVBoxLayout*>(layoutName)) {
-            layout->setContentsMargins(8, 8, 8, 8);
-            layout->setSpacing(6);
+            layout->setContentsMargins(6, 6, 6, 6);
+            layout->setSpacing(4);
         }
+    }
+
+    if (auto *cardLoadTest = this->findChild<QWidget*>("cardLoadTest")) {
+        cardLoadTest->setMaximumHeight(110);
+    }
+
+    const Qt::TextInteractionFlags textFlags = Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard;
+    const auto labels = this->findChildren<QLabel*>();
+    for (QLabel* label : labels) {
+        if (!label) continue;
+        label->setTextInteractionFlags(textFlags);
+    }
+
+    const QList<QLabel*> wrapLabels = {
+        m_lblVramSlot, m_lblVramCtx, m_lblVramDecoder, m_lblVramOther,
+        m_lblInputArena, m_lblOutputArena, m_lblSlotPool, m_lblDetQueue,
+        m_lblInferFps, m_lblDecodeFps, m_lblDisplayFps,
+        m_lblWorkerIdle, m_lblBatchUtil, m_lblPeakSlots, m_lblCtxPool,
+        m_lblInputArenaStates, m_lblOutputArenaStates, m_lblBottleneck
+    };
+    for (QLabel* label : wrapLabels) {
+        if (!label) continue;
+        label->setWordWrap(true);
+        label->setMinimumWidth(0);
+        label->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     }
 
     // ---- 信号连接 ----
@@ -607,6 +734,7 @@ AdvancedSettingsDialog::Settings AdvancedSettingsDialog::getSettings() const
     Settings s;
     s.baseSlots      = 4;
     s.inputArenaFrames = m_spinSlots->value();
+    s.outputArenaFrames = m_spinContextPool->value();
     s.inferenceStreams = std::max(1, m_spinInferenceStreams->value());
     s.workerCount    = s.inferenceStreams;
     s.workerMaxBatch = m_spinBatch->value();
@@ -614,20 +742,24 @@ AdvancedSettingsDialog::Settings AdvancedSettingsDialog::getSettings() const
     s.modelPath      = m_editModelPath->text();
     s.classesPath    = m_editClassesPath->text();
     s.statsInterval  = m_spinStatsInterval->value();
+    s.displayConfThreshold = m_spinDisplayConf ? m_spinDisplayConf->value() : 0.55;
     return s;
 }
 
 void AdvancedSettingsDialog::setSettings(const Settings& s)
 {
     m_spinSlots->setValue(std::max(16, s.inputArenaFrames));
+    m_spinContextPool->setValue(std::max(16, s.outputArenaFrames));
     int parallel_workers = std::max(1, s.inferenceStreams);
     m_spinInferenceStreams->setValue(parallel_workers);
     m_spinWorkerCount->setValue(parallel_workers);
     m_spinBatch->setValue(s.workerMaxBatch);
-    m_spinContextPool->setValue(1);
     m_editModelPath->setText(s.modelPath);
     m_editClassesPath->setText(s.classesPath);
     m_spinStatsInterval->setValue(s.statsInterval);
+    if (m_spinDisplayConf) {
+        m_spinDisplayConf->setValue(std::clamp(s.displayConfThreshold, 0.01, 1.0));
+    }
 }
 
 // ===================== 槽函数 ============================
@@ -670,6 +802,9 @@ void AdvancedSettingsDialog::refreshDashboard()
     size_t used_bytes = 0;
     size_t total_bytes = 0;
     bool has_gpu_mem = false;
+    size_t input_inflight_frames_snapshot = 0;
+    size_t output_active_frames_snapshot = 0;
+    size_t output_pending_frames_snapshot = 0;
     // --- GPU Memory ---
     {
         size_t free_bytes = 0;
@@ -692,11 +827,15 @@ void AdvancedSettingsDialog::refreshDashboard()
     // --- VRAM Breakdown (estimate) ---
     {
         const double mib = 1024.0 * 1024.0;
-        auto inArena = TensorArenaManager::getInstance().inputStats();
-        auto outArena = TensorArenaManager::getInstance().outputStats();
+        auto& tensorMgr = TensorArenaManager::getInstance();
+        auto inArena = tensorMgr.inputStats();
+        auto outArena = tensorMgr.outputStats();
         size_t slot_bytes = inArena.total_bytes + outArena.total_bytes;
-        int ctx_count = TRTDetector::getInstance().getContextTotalCount();
-        size_t ctx_bytes = static_cast<size_t>(ctx_count) * 500 * 1024 * 1024; // 约 500 MiB/ctx
+        auto& detector = TRTDetector::getInstance();
+        int ctx_created = detector.getContextTotalCount();
+        int ctx_alive = detector.getContextActiveCount();
+        size_t ctx_bytes = detector.getContextActiveBytes();
+        size_t trt_runtime_bytes = detector.getTrtRuntimeBytes();
         size_t decoder_bytes = VideoDecoder::totalDecoderVramBytes();
         size_t decode_frame_bytes = VideoDecoder::totalStandaloneFrameVramBytes();
         size_t display_bytes = DisplayWorker::totalDisplayVramBytes();
@@ -710,24 +849,30 @@ void AdvancedSettingsDialog::refreshDashboard()
         } else {
             double slotMiB = slot_bytes / mib;
             double ctxMiB = ctx_bytes / mib;
+            double trtRuntimeMiB = trt_runtime_bytes / mib;
             double decCtxMiB = decoder_bytes / mib;
             double decFrameMiB = decode_frame_bytes / mib;
             double displayMiB = display_bytes / mib;
-            double knownMiB = 0.0;
-            size_t known = slot_bytes + ctx_bytes + decoder_bytes + decode_frame_bytes + display_bytes;
-            knownMiB = static_cast<double>(known) / mib;
-            double otherMiB = 0.0;
-            if (used_bytes > known) {
-                otherMiB = (used_bytes - known) / mib;
-            }
+            const int ctx_avg_mib = (ctx_alive > 0)
+                ? static_cast<int>(std::llround((ctx_bytes / mib) / static_cast<double>(ctx_alive)))
+                : 0;
+            size_t known = slot_bytes + trt_runtime_bytes + ctx_bytes + decoder_bytes + decode_frame_bytes + display_bytes;
+            double knownMiB = static_cast<double>(known) / mib;
+            double unknownMiB = (static_cast<double>(used_bytes) - static_cast<double>(known)) / mib;
+
             m_lblVramSlot->setText(QString("%1 MiB (input+output arenas)").arg(slotMiB, 0, 'f', 1));
-            m_lblVramCtx->setText(QString("%1 MiB (~%2 ctx)").arg(ctxMiB, 0, 'f', 1).arg(ctx_count));
-            m_lblVramDecoder->setText(QString("%1 MiB (ctx est) + %2 MiB (frame copy) + %3 MiB (display)")
+            m_lblVramCtx->setText(QString("%1 MiB (active=%2, created=%3, avg=%4 MiB/ctx)")
+                                  .arg(ctxMiB, 0, 'f', 1)
+                                  .arg(ctx_alive)
+                                  .arg(ctx_created)
+                                  .arg(ctx_avg_mib));
+            m_lblVramDecoder->setText(QString("%1 MiB (TRT runtime) + %2 MiB (decoder) + %3 MiB (frame copy) + %4 MiB (display)")
+                                      .arg(trtRuntimeMiB, 0, 'f', 1)
                                       .arg(decCtxMiB, 0, 'f', 1)
                                       .arg(decFrameMiB, 0, 'f', 1)
                                       .arg(displayMiB, 0, 'f', 1));
-            m_lblVramOther->setText(QString("%1 MiB (TRT/CUDA untracked, known=%2 MiB)")
-                                    .arg(otherMiB, 0, 'f', 1)
+            m_lblVramOther->setText(QString("%1 MiB (residual=used-known, known=%2 MiB)")
+                                    .arg(unknownMiB, 0, 'f', 1)
                                     .arg(knownMiB, 0, 'f', 1));
             m_lblDecoderCount->setText(QString("%1 / %2 (max %3)")
                 .arg(VideoDecoder::hwDecoderCount())
@@ -738,20 +883,163 @@ void AdvancedSettingsDialog::refreshDashboard()
 
     // --- GPU Arenas ---
     {
-        auto inputStats = TensorArenaManager::getInstance().inputStats();
-        auto outputStats = TensorArenaManager::getInstance().outputStats();
+        auto& tensorMgr = TensorArenaManager::getInstance();
+        auto inputStats = tensorMgr.inputStats();
+        auto outputStats = tensorMgr.outputStats();
+        auto inputSegments = tensorMgr.inputSegments();
+        auto outputSegments = tensorMgr.outputSegments();
+        uintptr_t inputBase = tensorMgr.inputBaseAddress();
+
+        auto storeStats = InputFrameArenaStore::getInstance().getStats();
+        auto sampleRanges = InputFrameArenaStore::getInstance().getSampleRanges();
+
+        std::vector<std::pair<size_t, size_t>> readyRanges;
+        std::vector<std::pair<size_t, size_t>> inflightRanges;
+        readyRanges.reserve(sampleRanges.size());
+        inflightRanges.reserve(sampleRanges.size());
+        for (const auto& r : sampleRanges) {
+            if (r.ptr < inputBase || r.bytes == 0) {
+                continue;
+            }
+            size_t begin = static_cast<size_t>(r.ptr - inputBase);
+            size_t end = begin + r.bytes;
+            if (r.state == InputFrameArenaStore::SampleState::Ready) {
+                readyRanges.emplace_back(begin, end);
+            } else {
+                inflightRanges.emplace_back(begin, end);
+            }
+        }
+
+        auto overlaps = [](const std::vector<std::pair<size_t, size_t>>& ranges, size_t begin, size_t end) {
+            for (const auto& range : ranges) {
+                if (range.second <= begin || range.first >= end) {
+                    continue;
+                }
+                return true;
+            }
+            return false;
+        };
+
+        auto toRatio = [](size_t v, size_t total) -> double {
+            if (total == 0) return 0.0;
+            return std::clamp(static_cast<double>(v) / static_cast<double>(total), 0.0, 1.0);
+        };
+
+        std::vector<ArenaStateBar::Segment> inputVisualSegs;
+        inputVisualSegs.reserve(inputSegments.size());
+        for (const auto& seg : inputSegments) {
+            if (inputStats.total_bytes == 0 || seg.bytes == 0) continue;
+            ArenaStateBar::Segment vis;
+            vis.begin = toRatio(seg.offset, inputStats.total_bytes);
+            vis.end = toRatio(seg.offset + seg.bytes, inputStats.total_bytes);
+            if (seg.status == GpuArena::SegmentStatus::Free) {
+                vis.color = QColor("#CBD5E1");
+            } else {
+                const size_t segBegin = seg.offset;
+                const size_t segEnd = seg.offset + seg.bytes;
+                if (overlaps(readyRanges, segBegin, segEnd)) {
+                    vis.color = QColor("#22C55E");
+                } else if (overlaps(inflightRanges, segBegin, segEnd)) {
+                    vis.color = QColor("#F59E0B");
+                } else {
+                    vis.color = QColor("#22C55E");
+                }
+            }
+            inputVisualSegs.push_back(vis);
+        }
+        if (m_barInputArenaState) {
+            m_barInputArenaState->setSegments(inputVisualSegs);
+        }
+
+        std::vector<ArenaStateBar::Segment> outputVisualSegs;
+        outputVisualSegs.reserve(outputSegments.size());
+        for (const auto& seg : outputSegments) {
+            if (outputStats.total_bytes == 0 || seg.bytes == 0) continue;
+            ArenaStateBar::Segment vis;
+            vis.begin = toRatio(seg.offset, outputStats.total_bytes);
+            vis.end = toRatio(seg.offset + seg.bytes, outputStats.total_bytes);
+            switch (seg.status) {
+                case GpuArena::SegmentStatus::Free: vis.color = QColor("#CBD5E1"); break;
+                case GpuArena::SegmentStatus::PendingFree: vis.color = QColor("#F59E0B"); break;
+                case GpuArena::SegmentStatus::Active: vis.color = QColor("#3B82F6"); break;
+            }
+            outputVisualSegs.push_back(vis);
+        }
+        if (m_barOutputArenaState) {
+            m_barOutputArenaState->setSegments(outputVisualSegs);
+        }
+
+        size_t input_total_frames = static_cast<size_t>(std::max(16, m_spinSlots ? m_spinSlots->value() : 16));
+        size_t input_ready_frames = storeStats.ready_frames;
+        size_t input_inflight_frames = storeStats.inflight_frames;
+        size_t input_free_frames = (input_total_frames > (input_ready_frames + input_inflight_frames))
+            ? (input_total_frames - input_ready_frames - input_inflight_frames)
+            : 0;
+
+        const size_t output_bytes_per_frame = TRTDetector::getInstance().getOutputBytesPerFrame();
+        size_t output_total_frames = static_cast<size_t>(std::max(16, m_spinContextPool ? m_spinContextPool->value() : 16));
+        size_t output_active_frames = 0;
+        size_t output_pending_frames = 0;
+        if (output_bytes_per_frame > 0) {
+            output_total_frames = outputStats.total_bytes / output_bytes_per_frame;
+            output_active_frames = outputStats.active_alloc_bytes / output_bytes_per_frame;
+            output_pending_frames = outputStats.pending_free_bytes / output_bytes_per_frame;
+        }
+        size_t output_free_frames = 0;
+        if (output_total_frames > output_active_frames + output_pending_frames) {
+            output_free_frames = output_total_frames - output_active_frames - output_pending_frames;
+        }
 
         double mib = 1024.0 * 1024.0;
-        QString inputText = QString("%1 / %2 MiB (%3% frag)")
+        QString inputText = QString("%1 / %2 MiB | frag %3% | frames %4/%5")
             .arg(inputStats.used_bytes / mib, 0, 'f', 1)
             .arg(inputStats.total_bytes / mib, 0, 'f', 1)
-            .arg(inputStats.fragmentation_ratio * 100.0, 0, 'f', 1);
-        QString outputText = QString("%1 / %2 MiB (%3% frag)")
+            .arg(inputStats.fragmentation_ratio * 100.0, 0, 'f', 1)
+            .arg(input_ready_frames + input_inflight_frames)
+            .arg(input_total_frames);
+        QString outputText = QString("%1 / %2 MiB | frag %3% | frames %4/%5")
             .arg(outputStats.used_bytes / mib, 0, 'f', 1)
             .arg(outputStats.total_bytes / mib, 0, 'f', 1)
-            .arg(outputStats.fragmentation_ratio * 100.0, 0, 'f', 1);
+            .arg(outputStats.fragmentation_ratio * 100.0, 0, 'f', 1)
+            .arg(output_active_frames + output_pending_frames)
+            .arg(output_total_frames);
         m_lblInputArena->setText(inputText);
         m_lblOutputArena->setText(outputText);
+
+        input_inflight_frames_snapshot = input_inflight_frames;
+        output_active_frames_snapshot = output_active_frames;
+        output_pending_frames_snapshot = output_pending_frames;
+
+        auto pctText = [](size_t v, size_t total) {
+            if (total == 0) return QString("0.0");
+            return QString::number(100.0 * static_cast<double>(v) / static_cast<double>(total), 'f', 1);
+        };
+        if (m_lblInputArenaStates) {
+            m_lblInputArenaStates->setText(
+                QString("⬜ Free %1 (%2%)  "
+                        "🟩 Ready %3 (%4%)  "
+                        "🟧 Inflight %5 (%6%)")
+                    .arg(input_free_frames)
+                    .arg(pctText(input_free_frames, input_total_frames))
+                    .arg(input_ready_frames)
+                    .arg(pctText(input_ready_frames, input_total_frames))
+                    .arg(input_inflight_frames)
+                    .arg(pctText(input_inflight_frames, input_total_frames))
+            );
+        }
+        if (m_lblOutputArenaStates) {
+            m_lblOutputArenaStates->setText(
+                QString("⬜ Free %1 (%2%)  "
+                        "🟦 Active %3 (%4%)  "
+                        "🟧 Pending %5 (%6%)")
+                    .arg(output_free_frames)
+                    .arg(pctText(output_free_frames, output_total_frames))
+                    .arg(output_active_frames)
+                    .arg(pctText(output_active_frames, output_total_frames))
+                    .arg(output_pending_frames)
+                    .arg(pctText(output_pending_frames, output_total_frames))
+            );
+        }
     }
 
     // --- Slot Pool ---
@@ -762,7 +1050,12 @@ void AdvancedSettingsDialog::refreshDashboard()
         if (total > 0) {
             int pct = 100 * active / total;
             m_barSlotPool->setValue(pct);
-            m_lblSlotPool->setText(QString("Active %1 / %2  (Free %3)").arg(active).arg(total).arg(avail));
+            int workers = std::max(1, m_spinInferenceStreams ? m_spinInferenceStreams->value() : 1);
+            m_lblSlotPool->setText(QString("Active %1 / %2  (Free %3, workers=%4, estEvents=%5, inputInflightFrames=%6)")
+                                   .arg(active).arg(total).arg(avail)
+                                   .arg(workers)
+                                   .arg(output_active_frames_snapshot + output_pending_frames_snapshot)
+                                   .arg(input_inflight_frames_snapshot));
         } else {
             m_barSlotPool->setValue(0);
             m_lblSlotPool->setText("Not initialized");
@@ -777,7 +1070,7 @@ void AdvancedSettingsDialog::refreshDashboard()
         if (cap > 0) {
             int pct = static_cast<int>(100 * sz / cap);
             m_barDetQueue->setValue(pct);
-            m_lblDetQueue->setText(QString("Ready %1 / %2  (Inflight %3, Dropped %4)")
+            m_lblDetQueue->setText(QString("ReadyFrames %1 / %2  (InflightFrames %3, Dropped %4)")
                                        .arg(sz).arg(cap)
                                        .arg(storeStats.inflight_frames)
                                        .arg(storeStats.dropped_frames));
@@ -815,6 +1108,11 @@ void AdvancedSettingsDialog::refreshDashboard()
     uint64_t w_gpu_preproc_us = ps.worker_gpu_preproc_us.exchange(0, std::memory_order_relaxed);
     uint64_t w_gpu_infer_us = ps.worker_gpu_infer_us.exchange(0, std::memory_order_relaxed);
     uint64_t w_gpu_batches = ps.worker_gpu_batches.exchange(0, std::memory_order_relaxed);
+    uint64_t w_no_slot = ps.worker_no_slot.exchange(0, std::memory_order_relaxed);
+    uint64_t w_no_stream = ps.worker_no_stream.exchange(0, std::memory_order_relaxed);
+    uint64_t w_alloc_in_fail = ps.worker_alloc_input_fail.exchange(0, std::memory_order_relaxed);
+    uint64_t w_alloc_out_fail = ps.worker_alloc_output_fail.exchange(0, std::memory_order_relaxed);
+    uint64_t w_submit_fail = ps.worker_submit_fail.exchange(0, std::memory_order_relaxed);
     uint64_t post_d2h_us = ps.postprocess_d2h_us.exchange(0, std::memory_order_relaxed);
     uint64_t post_batches = ps.postprocess_batches.exchange(0, std::memory_order_relaxed);
     uint64_t post_frames = ps.postprocess_frames.exchange(0, std::memory_order_relaxed);
@@ -826,11 +1124,6 @@ void AdvancedSettingsDialog::refreshDashboard()
         if (count == 0) return 0.0;
         return (static_cast<double>(total_us) / 1000.0) / static_cast<double>(count);
     };
-    auto cap_fps = [](double ms_per_item, double items_per_unit) -> double {
-        if (ms_per_item <= 1e-9 || items_per_unit <= 1e-9) return 0.0;
-        return 1000.0 * items_per_unit / ms_per_item;
-    };
-
     double decode_fps = decoded / interval;
     double infer_fps  = inferred / interval;
     double display_fps = displayed / interval;
@@ -852,38 +1145,31 @@ void AdvancedSettingsDialog::refreshDashboard()
     double slot_wait_ms = per_item_ms(w_slot_us, w_batches);
     double d2h_ms = per_item_ms(post_d2h_us, post_batches);
 
-    double demux_cap = cap_fps(demux_ms, 1.0);
-    double decode_total_ms = decode_send_ms + decode_recv_ms;
-    double decode_recv_cap = cap_fps(decode_total_ms, 1.0);
-    double htod_cap = cap_fps(htod_ms, 1.0);
-    double preproc_gpu_cap = cap_fps(preproc_gpu_ms, avg_gpu_batch);
-    double infer_gpu_cap = cap_fps(infer_gpu_ms, avg_gpu_batch);
-    double d2h_cap = cap_fps(d2h_ms, avg_post_batch);
-
-    struct StageCap { const char* name; double cap; };
-    StageCap caps[] = {
-        {"demux", demux_cap},
-        {"decode", decode_recv_cap},
-        {"htod", htod_cap},
-        {"preproc", preproc_gpu_cap},
-        {"infer", infer_gpu_cap},
-        {"d2h", d2h_cap},
-    };
-    double pipeline_cap = 0.0;
-    const char* bottleneck_stage = "unknown";
-    for (const auto& sc : caps) {
-        if (sc.cap <= 0.0 || !std::isfinite(sc.cap)) continue;
-        if (pipeline_cap <= 0.0 || sc.cap < pipeline_cap) {
-            pipeline_cap = sc.cap;
-            bottleneck_stage = sc.name;
+    // Throughput labels (instant + short-window EMA)
+    {
+        const double alpha = 0.35;
+        if (!m_fpsEmaInited) {
+            m_decodeFpsEma = decode_fps;
+            m_inferFpsEma = infer_fps;
+            m_displayFpsEma = display_fps;
+            m_fpsEmaInited = true;
+        } else {
+            m_decodeFpsEma = alpha * decode_fps + (1.0 - alpha) * m_decodeFpsEma;
+            m_inferFpsEma = alpha * infer_fps + (1.0 - alpha) * m_inferFpsEma;
+            m_displayFpsEma = alpha * display_fps + (1.0 - alpha) * m_displayFpsEma;
         }
     }
 
-    // Throughput labels
-    m_lblDecodeFps->setText(  QString::number(decoded   / interval, 'f', 1) + " fps");
-    m_lblInferFps->setText(   QString::number(inferred  / interval, 'f', 1) + " fps (" +
-                              QString::number(batches / interval, 'f', 1) + " batches/s)");
-    m_lblDisplayFps->setText( QString::number(displayed / interval, 'f', 1) + " fps");
+    m_lblDecodeFps->setText(QString("%1 fps (avg %2)")
+        .arg(QString::number(decode_fps, 'f', 1))
+        .arg(QString::number(m_decodeFpsEma, 'f', 1)));
+    m_lblInferFps->setText(QString("%1 fps (avg %2, %3 batches/s)")
+        .arg(QString::number(infer_fps, 'f', 1))
+        .arg(QString::number(m_inferFpsEma, 'f', 1))
+        .arg(QString::number(batches / interval, 'f', 1)));
+    m_lblDisplayFps->setText(QString("%1 fps (avg %2)")
+        .arg(QString::number(display_fps, 'f', 1))
+        .arg(QString::number(m_displayFpsEma, 'f', 1)));
     m_lblDetections->setText( QString::number(dets      / interval, 'f', 1) + " /s");
     m_lblDqPush->setText(     QString::number(pushed    / interval, 'f', 1) + " fps");
     m_lblDqDrop->setText(     QString::number(dropped   / interval, 'f', 1) + " /s");
@@ -893,9 +1179,9 @@ void AdvancedSettingsDialog::refreshDashboard()
     {
         uint64_t w_total = w_pop_empty + w_batches;
         double idle_pct = (w_total > 0) ? 100.0 * w_pop_empty / w_total : 0.0;
-        QString idleColor = (idle_pct > 60) ? "color: red;" : (idle_pct > 30) ? "color: orange;" : "color: green;";
-        m_lblWorkerIdle->setText(QString("<span style='%1'>%2 / %3 cycles (%4%)</span>")
-            .arg(idleColor)
+        QString idleColor = (idle_pct > 60) ? "#DC2626" : (idle_pct > 30) ? "#D97706" : "#16A34A";
+        m_lblWorkerIdle->setStyleSheet(QString("QLabel { color: %1; font-weight: 700; }").arg(idleColor));
+        m_lblWorkerIdle->setText(QString("%1 / %2 cycles (%3%)")
             .arg(w_pop_empty).arg(w_total)
             .arg(idle_pct, 0, 'f', 1));
 
@@ -910,7 +1196,20 @@ void AdvancedSettingsDialog::refreshDashboard()
 
         size_t activeSlots = SlotPool::getInstance().activeSlots();
         size_t totalSlots = SlotPool::getInstance().totalSlots();
-        m_lblPeakSlots->setText(QString("%1 / %2").arg(activeSlots).arg(totalSlots));
+        size_t peakSlotsWindow = SlotPool::getInstance().peakActiveSlotsAndReset();
+        if (peakSlotsWindow == 0) {
+            peakSlotsWindow = activeSlots;
+        }
+        m_lblPeakSlots->setText(QString("%1 / %2 (now %3)")
+            .arg(peakSlotsWindow)
+            .arg(totalSlots)
+            .arg(activeSlots));
+        m_lblCtxPool->setText(QString("no_slot=%1, no_stream=%2, alloc_in=%3, alloc_out=%4, submit=%5")
+            .arg(w_no_slot)
+            .arg(w_no_stream)
+            .arg(w_alloc_in_fail)
+            .arg(w_alloc_out_fail)
+            .arg(w_submit_fail));
 
     }
 
@@ -924,6 +1223,7 @@ void AdvancedSettingsDialog::refreshDashboard()
         double dq_drop_ps = dropped / interval;
         double max_batch_cfg = std::max(1.0, static_cast<double>(m_spinBatch ? m_spinBatch->value() : 1));
         double batch_util = avg_batch / max_batch_cfg;
+        uint64_t fail_total = w_no_slot + w_no_stream + w_alloc_in_fail + w_alloc_out_fail + w_submit_fail;
         auto storeStats = InputFrameArenaStore::getInstance().getStats();
         size_t dq_sz = storeStats.ready_frames;
         size_t dq_cap = storeStats.max_ready_frames;
@@ -931,6 +1231,11 @@ void AdvancedSettingsDialog::refreshDashboard()
         QString analysis;
         if (decode_fps < 1.0 && infer_fps < 1.0) {
             analysis = "⏸ Idle — 无活跃通道 / No active channels";
+        } else if (infer_fps < 1.0 && fail_total > 0) {
+            analysis = QString("🔴 WORKER-FAILURE / 推理任务失败\n"
+                "fail(total=%1): no_slot=%2, no_stream=%3, alloc_in=%4, alloc_out=%5, submit=%6。\n"
+                "建议: 优先检查 Arena 容量（input/output frames）与 TRT 提交路径。")
+                .arg(fail_total).arg(w_no_slot).arg(w_no_stream).arg(w_alloc_in_fail).arg(w_alloc_out_fail).arg(w_submit_fail);
         } else if (infer_ratio < 0.92 && (dq_drop_ps > 1.0 || dq_sz > dq_cap * 0.2 || batch_util < 0.45)) {
             analysis = QString("🔴 INFERENCE-LIMITED / 推理并行不足\n"
                 "Input=%1 fps, Infer=%2 fps, Gap=%3 fps, AvgBatch=%4/%5。\n"
@@ -952,41 +1257,45 @@ void AdvancedSettingsDialog::refreshDashboard()
         } else {
             analysis = "🟢 BALANCED / 均衡\n管线各阶段匹配良好。";
         }
-
-        (void)pipeline_cap;
-        (void)bottleneck_stage;
         m_lblBottleneck->setText(analysis);
     }
 
     // 生成可复制的文本报告，方便一键复制到剪贴板
     {
+        auto plain = [](const QString& t) { return toPlainReportText(t); };
         QStringList lines;
         lines << "Pipeline Diagnostic Report";
         lines << "--------------------------";
-        lines << QString("GPU Memory: %1").arg(m_lblGpuMem->text());
-        lines << QString("VRAM Tensor Arenas (est): %1").arg(m_lblVramSlot->text());
-        lines << QString("VRAM Context (est): %1").arg(m_lblVramCtx->text());
-        lines << QString("VRAM Decoder (est): %1").arg(m_lblVramDecoder->text());
-        lines << QString("VRAM Other (est): %1").arg(m_lblVramOther->text());
-        lines << QString("Slot Pool: %1").arg(m_lblSlotPool->text());
-        lines << QString("Input ReadyQ: %1").arg(m_lblDetQueue->text());
+        lines << QString("GPU Memory: %1").arg(plain(m_lblGpuMem->text()));
+        lines << QString("VRAM Tensor Arenas (est): %1").arg(plain(m_lblVramSlot->text()));
+        lines << QString("VRAM Context (est): %1").arg(plain(m_lblVramCtx->text()));
+        lines << QString("VRAM Decoder (est): %1").arg(plain(m_lblVramDecoder->text()));
+        lines << QString("VRAM Residual (est): %1").arg(plain(m_lblVramOther->text()));
+        lines << "VRAM Formula: residual = used - (tensor_arenas + context_active + trt_runtime + decoder + frame_copy + display)";
+        lines << QString("Input Arena: %1").arg(plain(m_lblInputArena->text()));
+        if (m_lblInputArenaStates) lines << QString("Input Arena States: %1").arg(plain(m_lblInputArenaStates->text()));
+        lines << QString("Output Arena: %1").arg(plain(m_lblOutputArena->text()));
+        if (m_lblOutputArenaStates) lines << QString("Output Arena States: %1").arg(plain(m_lblOutputArenaStates->text()));
+        lines << QString("Slot Pool: %1").arg(plain(m_lblSlotPool->text()));
+        lines << QString("Input ReadyQ: %1").arg(plain(m_lblDetQueue->text()));
         // FrameQueues: 简单列出 ch sizes
         // 若需更详细可扩展
-        lines << QString("Workers / Infer: %1, %2").arg(m_lblInferFps->text()).arg(m_lblBatchUtil->text());
+        lines << QString("Workers / Infer: %1, %2").arg(plain(m_lblInferFps->text())).arg(plain(m_lblBatchUtil->text()));
         lines << "";
         lines << "Throughput:";
-        lines << QString("  Input: %1").arg(m_lblDecodeFps->text());
-        lines << QString("  Infer:  %1").arg(m_lblInferFps->text());
-        lines << QString("  Display: %1").arg(m_lblDisplayFps->text());
-        lines << QString("  Detections: %1").arg(m_lblDetections->text());
-        lines << QString("  Input Push / Dropped: %1 / %2").arg(m_lblDqPush->text()).arg(m_lblDqDrop->text());
+        lines << QString("  Input: %1").arg(plain(m_lblDecodeFps->text()));
+        lines << QString("  Infer:  %1").arg(plain(m_lblInferFps->text()));
+        lines << QString("  Display: %1").arg(plain(m_lblDisplayFps->text()));
+        lines << QString("  Detections: %1").arg(plain(m_lblDetections->text()));
+        lines << QString("  Input Push / Dropped: %1 / %2").arg(plain(m_lblDqPush->text())).arg(plain(m_lblDqDrop->text()));
         lines << "";
         lines << "Worker Efficiency:";
-        lines << QString("  Idle: %1").arg(m_lblWorkerIdle->text());
-        lines << QString("  Avg batch: %1").arg(m_lblBatchUtil->text());
-        lines << QString("  Slot wait: %1").arg(m_lblSlotWait->text());
-        lines << QString("  Preproc: %1").arg(m_lblPreprocTime->text());
-        lines << QString("  Peak Slots: %1").arg(m_lblPeakSlots->text());
+        lines << QString("  Idle: %1").arg(plain(m_lblWorkerIdle->text()));
+        lines << QString("  Avg batch: %1").arg(plain(m_lblBatchUtil->text()));
+        lines << QString("  Slot wait: %1").arg(plain(m_lblSlotWait->text()));
+        lines << QString("  Preproc: %1").arg(plain(m_lblPreprocTime->text()));
+        lines << QString("  Peak Slots: %1").arg(plain(m_lblPeakSlots->text()));
+        lines << QString("  Failures: %1").arg(plain(m_lblCtxPool->text()));
         lines << "";
         lines << "Stage Timings (avg ms):";
         lines << QString("  demux read: %1").arg(demux_ms, 0, 'f', 3);
@@ -998,17 +1307,8 @@ void AdvancedSettingsDialog::refreshDashboard()
         lines << QString("  DtoH postprocess: %1").arg(d2h_ms, 0, 'f', 3);
         lines << QString("  slot/fq wait: %1 / %2").arg(slot_wait_ms, 0, 'f', 3).arg(fq_push_wait_ms, 0, 'f', 3);
         lines << "";
-        lines << "Stage FPS Caps (estimated):";
-        lines << QString("  demux: %1 fps").arg(demux_cap, 0, 'f', 1);
-        lines << QString("  decode: %1 fps").arg(decode_recv_cap, 0, 'f', 1);
-        lines << QString("  HtoD: %1 fps").arg(htod_cap, 0, 'f', 1);
-        lines << QString("  preproc GPU: %1 fps").arg(preproc_gpu_cap, 0, 'f', 1);
-        lines << QString("  infer GPU: %1 fps").arg(infer_gpu_cap, 0, 'f', 1);
-        lines << QString("  DtoH: %1 fps").arg(d2h_cap, 0, 'f', 1);
-        lines << QString("  Pipeline cap: %1 fps (%2)").arg(pipeline_cap, 0, 'f', 1).arg(bottleneck_stage);
-        lines << "";
         lines << "Bottleneck:";
-        lines << m_lblBottleneck->text();
+        lines << plain(m_lblBottleneck->text());
 
         m_lastDashboardText = lines.join('\n');
 

@@ -11,6 +11,32 @@
 #include <cmath>
 #include <cuda_runtime.h>
 
+namespace {
+float iou_xyxy(float ax0, float ay0, float ax1, float ay1,
+               float bx0, float by0, float bx1, float by1) {
+    const float ix0 = std::max(ax0, bx0);
+    const float iy0 = std::max(ay0, by0);
+    const float ix1 = std::min(ax1, bx1);
+    const float iy1 = std::min(ay1, by1);
+    const float iw = std::max(0.0f, ix1 - ix0);
+    const float ih = std::max(0.0f, iy1 - iy0);
+    const float inter = iw * ih;
+    const float a = std::max(0.0f, ax1 - ax0) * std::max(0.0f, ay1 - ay0);
+    const float b = std::max(0.0f, bx1 - bx0) * std::max(0.0f, by1 - by0);
+    const float uni = a + b - inter;
+    if (uni <= 1e-6f) return 0.0f;
+    return inter / uni;
+}
+
+struct NmsBox {
+    TRTDetector::Detection det;
+    float x0 = 0.0f;
+    float y0 = 0.0f;
+    float x1 = 0.0f;
+    float y1 = 0.0f;
+};
+}
+
 TRTDetector::~TRTDetector() {
     shutdown();
 }
@@ -76,7 +102,7 @@ void TRTDetector::callbackWorkerLoop() {
         bool success = !is_shutting_down;
 
         if (success && task.host_out != nullptr && task.batch_size > 0) {
-            auto detections_batch = parseDetections(task.host_out, task.batch_size);
+            auto detections_batch = parseDetections(task.host_out, task.batch_size, getConfidenceThreshold());
             size_t sample_count = std::min(task.samples.size(), detections_batch.size());
             for (size_t i = 0; i < sample_count; ++i) {
                 const auto& sm = task.samples[i];
@@ -170,6 +196,13 @@ void TRTDetector::shutdown() {
     // 然后释放 engine/runtime
     engine_.reset();
     runtime_.reset();
+    {
+        std::lock_guard<std::mutex> lk(ctx_mem_mutex_);
+        ctx_mem_bytes_.clear();
+    }
+    ctx_alive_.store(0, std::memory_order_relaxed);
+    ctx_active_bytes_.store(0, std::memory_order_relaxed);
+    trt_runtime_bytes_.store(0, std::memory_order_relaxed);
     std::cout << "[TRTDetector] Context created: " << ctx_created_.load() << std::endl;
 }
 
@@ -191,6 +224,10 @@ bool TRTDetector::load(const std::string& model_path) {
     cudaSetDevice(0);
     cudaFree(0); // 初始化 CUDA 上下文
 
+    size_t free_before_runtime = 0;
+    size_t total_runtime = 0;
+    cudaMemGetInfo(&free_before_runtime, &total_runtime);
+
     std::ifstream file(model_path, std::ios::binary);
     if (!file.good()) {
         std::cerr << "Read model file failed: " << model_path << std::endl;
@@ -210,6 +247,16 @@ bool TRTDetector::load(const std::string& model_path) {
 
     engine_.reset(runtime_->deserializeCudaEngine(model_data.data(), size));
     if (!engine_) return false;
+
+    cudaDeviceSynchronize();
+    size_t free_after_runtime = 0;
+    size_t total_runtime_after = 0;
+    cudaMemGetInfo(&free_after_runtime, &total_runtime_after);
+    if (total_runtime > 0 && total_runtime == total_runtime_after && free_before_runtime > free_after_runtime) {
+        trt_runtime_bytes_.store(free_before_runtime - free_after_runtime, std::memory_order_relaxed);
+    } else {
+        trt_runtime_bytes_.store(0, std::memory_order_relaxed);
+    }
 
     // 3. 提取张量元数据 (假设模型是单输入单输出)
     // 注意：V3 API 使用索引 0 和 1 获取 IOTensorName
@@ -300,15 +347,66 @@ bool TRTDetector::load(const std::string& model_path) {
     PipelineStats::getInstance().ctx_pool_size.store(0, std::memory_order_relaxed);
     PipelineStats::getInstance().ctx_pool_hits.store(0, std::memory_order_relaxed);
     PipelineStats::getInstance().ctx_pool_misses.store(0, std::memory_order_relaxed);
+    ctx_alive_.store(0, std::memory_order_relaxed);
+    ctx_active_bytes_.store(0, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> lk(ctx_mem_mutex_);
+        ctx_mem_bytes_.clear();
+    }
     std::cout << "[TRTDetector] Ready. Contexts are managed by workers." << std::endl;
     return true;
 }
 
 nvinfer1::IExecutionContext* TRTDetector::createContext() {
     if (!engine_) return nullptr;
+    size_t free_before = 0;
+    size_t total_before = 0;
+    cudaMemGetInfo(&free_before, &total_before);
     auto ctx = engine_->createExecutionContext();
-    if (ctx) ctx_created_.fetch_add(1, std::memory_order_relaxed);
+    if (ctx) {
+        cudaDeviceSynchronize();
+        size_t free_after = 0;
+        size_t total_after = 0;
+        cudaMemGetInfo(&free_after, &total_after);
+        size_t ctx_bytes = 0;
+        if (total_before > 0 && total_before == total_after && free_before > free_after) {
+            ctx_bytes = free_before - free_after;
+        }
+        {
+            std::lock_guard<std::mutex> lk(ctx_mem_mutex_);
+            ctx_mem_bytes_[ctx] = ctx_bytes;
+        }
+        ctx_created_.fetch_add(1, std::memory_order_relaxed);
+        ctx_alive_.fetch_add(1, std::memory_order_relaxed);
+        if (ctx_bytes > 0) {
+            ctx_active_bytes_.fetch_add(ctx_bytes, std::memory_order_relaxed);
+        }
+    }
     return ctx;
+}
+
+void TRTDetector::destroyContext(nvinfer1::IExecutionContext* context) {
+    if (!context) {
+        return;
+    }
+    size_t ctx_bytes = 0;
+    {
+        std::lock_guard<std::mutex> lk(ctx_mem_mutex_);
+        auto it = ctx_mem_bytes_.find(context);
+        if (it != ctx_mem_bytes_.end()) {
+            ctx_bytes = it->second;
+            ctx_mem_bytes_.erase(it);
+        }
+    }
+    delete context;
+    ctx_alive_.fetch_sub(1, std::memory_order_relaxed);
+    if (ctx_bytes > 0) {
+        size_t cur = ctx_active_bytes_.load(std::memory_order_relaxed);
+        while (cur > 0 && !ctx_active_bytes_.compare_exchange_weak(cur, (cur >= ctx_bytes) ? (cur - ctx_bytes) : 0,
+                                                                     std::memory_order_relaxed,
+                                                                     std::memory_order_relaxed)) {
+        }
+    }
 }
 bool TRTDetector::asyncInfer(Slot* slot, nvinfer1::IExecutionContext* context,
                              cudaStream_t stream, std::function<void(Slot*, bool)> cb,
@@ -317,17 +415,11 @@ bool TRTDetector::asyncInfer(Slot* slot, nvinfer1::IExecutionContext* context,
         return false;
     }
 
-    bool launched = inference(slot, context, stream);
-    if (!launched) {
-        return false;
-    }
-
-    if (infer_end_event) {
-        cudaEventRecord(infer_end_event, stream);
-    }
-
     int batch_size = slot->getCurBatchSize();
-    size_t output_bytes = output_bytes_per_batch_ * static_cast<size_t>(batch_size);
+    size_t output_bytes = slot->getOutputBytes();
+    if (output_bytes == 0) {
+        output_bytes = output_bytes_per_batch_ * static_cast<size_t>(batch_size);
+    }
     if (output_bytes == 0 || output_bytes > output_size_bytes_) {
         return false;
     }
@@ -343,6 +435,16 @@ bool TRTDetector::asyncInfer(Slot* slot, nvinfer1::IExecutionContext* context,
         return false;
     }
 
+    bool launched = inference(slot, context, stream);
+    if (!launched) {
+        releaseHostOutputBuffer(host_out);
+        return false;
+    }
+
+    if (infer_end_event) {
+        cudaEventRecord(infer_end_event, stream);
+    }
+
     std::vector<SampleMeta> sample_snapshot;
     sample_snapshot.reserve(static_cast<size_t>(batch_size));
     for (int i = 0; i < batch_size; ++i) {
@@ -356,6 +458,8 @@ bool TRTDetector::asyncInfer(Slot* slot, nvinfer1::IExecutionContext* context,
     cudaError_t d2h_err = cudaMemcpyAsync(host_out, device_out, output_bytes,
                                           cudaMemcpyDeviceToHost, stream);
     if (d2h_err != cudaSuccess) {
+        // 推理已提交，失败时需要等待 stream 结束，避免调用方立即回收仍在使用的显存
+        cudaStreamSynchronize(stream);
         releaseHostOutputBuffer(host_out);
         return false;
     }
@@ -385,6 +489,8 @@ bool TRTDetector::asyncInfer(Slot* slot, nvinfer1::IExecutionContext* context,
 
     if (err != cudaSuccess) {
         // 回调注册失败，回收 context
+        // d2h 已入队，先等待 stream 完成，再安全回收 host_out 并返回失败
+        cudaStreamSynchronize(stream);
         inflight_callbacks_.fetch_sub(1, std::memory_order_acq_rel);
         inflight_cv_.notify_all();
         releaseHostOutputBuffer(host_out);
@@ -474,6 +580,8 @@ std::vector<std::vector<TRTDetector::Detection>> TRTDetector::parseDetections(co
 
     results.resize(batch_size);
     static std::atomic<bool> s_parse_debug_printed{false};
+    const bool end2end_nms_free = (!transposed_layout && parsed_num_boxes == 300 && parsed_box_size == 6);
+    const float nms_iou_thr = getNmsIouThreshold();
     for (int b = 0; b < batch_size; ++b) {
         const size_t batch_offset = static_cast<size_t>(b) * per_batch_floats;
         for (int i = 0; i < parsed_num_boxes; ++i) {
@@ -503,7 +611,10 @@ std::vector<std::vector<TRTDetector::Detection>> TRTDetector::parseDetections(co
             // 兼容两类输出：
             // 1) [x,y,w,h,conf,class_id] 或 [x,y,w,h,class_id,conf]
             // 2) [x,y,w,h,obj,cls0,cls1,...]
-            if (parsed_box_size <= 6) {
+            if (end2end_nms_free) {
+                conf = box[4];
+                class_id = static_cast<int>(std::round(box[5]));
+            } else if (parsed_box_size <= 6) {
                 float v4 = box[4];
                 float v5 = box[5];
                 auto is_prob = [](float v) {
@@ -523,7 +634,15 @@ std::vector<std::vector<TRTDetector::Detection>> TRTDetector::parseDetections(co
                     conf = v5;
                     class_id = static_cast<int>(std::round(v4));
                 } else if (a_valid && b_valid) {
-                    if (v4 >= v5) {
+                    const bool v4_integer_like = looks_like_cls(v4);
+                    const bool v5_integer_like = looks_like_cls(v5);
+                    if (v5_integer_like && !v4_integer_like) {
+                        conf = v4;
+                        class_id = static_cast<int>(std::round(v5));
+                    } else if (v4_integer_like && !v5_integer_like) {
+                        conf = v5;
+                        class_id = static_cast<int>(std::round(v4));
+                    } else if (v4 >= v5) {
                         conf = v4;
                         class_id = static_cast<int>(std::round(v5));
                     } else {
@@ -559,7 +678,9 @@ std::vector<std::vector<TRTDetector::Detection>> TRTDetector::parseDetections(co
                 class_id = best_cls;
             }
 
-            if (conf > conf_threshold) {
+            if (std::isfinite(conf) && conf >= conf_threshold && class_id >= 0 &&
+                std::isfinite(box[0]) && std::isfinite(box[1]) &&
+                std::isfinite(box[2]) && std::isfinite(box[3])) {
                 Detection det;
                 det.x = box[0];
                 det.y = box[1];
@@ -581,6 +702,62 @@ std::vector<std::vector<TRTDetector::Detection>> TRTDetector::parseDetections(co
                     }
                 }
             }
+        }
+
+        auto& dets = results[b];
+        if (!end2end_nms_free && !dets.empty()) {
+            std::vector<NmsBox> candidates;
+            candidates.reserve(dets.size());
+            for (const auto& d : dets) {
+                NmsBox nb;
+                nb.det = d;
+                const bool looks_xyxy = (d.w > d.x && d.h > d.y);
+                if (looks_xyxy) {
+                    nb.x0 = d.x;
+                    nb.y0 = d.y;
+                    nb.x1 = d.w;
+                    nb.y1 = d.h;
+                } else {
+                    nb.x0 = d.x;
+                    nb.y0 = d.y;
+                    nb.x1 = d.x + d.w;
+                    nb.y1 = d.y + d.h;
+                }
+                if (nb.x1 <= nb.x0 || nb.y1 <= nb.y0) {
+                    continue;
+                }
+                candidates.push_back(nb);
+            }
+
+            std::sort(candidates.begin(), candidates.end(), [](const NmsBox& a, const NmsBox& b) {
+                if (a.det.class_id != b.det.class_id) return a.det.class_id < b.det.class_id;
+                return a.det.conf > b.det.conf;
+            });
+
+            std::vector<Detection> kept;
+            kept.reserve(candidates.size());
+            for (size_t i = 0; i < candidates.size(); ++i) {
+                const auto& cur = candidates[i];
+                bool suppressed = false;
+                for (const auto& kd : kept) {
+                    if (kd.class_id != cur.det.class_id) continue;
+                    float kx0, ky0, kx1, ky1;
+                    const bool kxyxy = (kd.w > kd.x && kd.h > kd.y);
+                    if (kxyxy) {
+                        kx0 = kd.x; ky0 = kd.y; kx1 = kd.w; ky1 = kd.h;
+                    } else {
+                        kx0 = kd.x; ky0 = kd.y; kx1 = kd.x + kd.w; ky1 = kd.y + kd.h;
+                    }
+                    if (iou_xyxy(cur.x0, cur.y0, cur.x1, cur.y1, kx0, ky0, kx1, ky1) > nms_iou_thr) {
+                        suppressed = true;
+                        break;
+                    }
+                }
+                if (!suppressed) {
+                    kept.push_back(cur.det);
+                }
+            }
+            dets.swap(kept);
         }
     }
     return results;

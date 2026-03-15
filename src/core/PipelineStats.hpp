@@ -47,6 +47,11 @@ struct PipelineStats {
     std::atomic<uint64_t> worker_gpu_preproc_us{0};  // GPU 预处理耗时（CUDA Event，微秒）
     std::atomic<uint64_t> worker_gpu_infer_us{0};    // GPU 推理耗时（CUDA Event，微秒）
     std::atomic<uint64_t> worker_gpu_batches{0};     // GPU 计时批次数
+    std::atomic<uint64_t> worker_no_slot{0};         // SlotPool 无可用 slot
+    std::atomic<uint64_t> worker_no_stream{0};       // TRTWorker stream/context 不可用
+    std::atomic<uint64_t> worker_alloc_input_fail{0};  // 输入 Tensor 分配失败
+    std::atomic<uint64_t> worker_alloc_output_fail{0}; // 输出 Tensor 分配失败
+    std::atomic<uint64_t> worker_submit_fail{0};       // asyncInfer 提交失败
 
     // === 后处理阶段 ===
     std::atomic<uint64_t> postprocess_d2h_us{0};     // DtoH 结果拷贝耗时（微秒）
@@ -85,6 +90,11 @@ struct PipelineStats {
         worker_gpu_preproc_us.store(0, std::memory_order_relaxed);
         worker_gpu_infer_us.store(0, std::memory_order_relaxed);
         worker_gpu_batches.store(0, std::memory_order_relaxed);
+        worker_no_slot.store(0, std::memory_order_relaxed);
+        worker_no_stream.store(0, std::memory_order_relaxed);
+        worker_alloc_input_fail.store(0, std::memory_order_relaxed);
+        worker_alloc_output_fail.store(0, std::memory_order_relaxed);
+        worker_submit_fail.store(0, std::memory_order_relaxed);
         postprocess_d2h_us.store(0, std::memory_order_relaxed);
         postprocess_batches.store(0, std::memory_order_relaxed);
         postprocess_frames.store(0, std::memory_order_relaxed);

@@ -118,6 +118,8 @@ private:
     int m_workerMaxBatch = 16;
     int m_baseSlots = 4; // 作为自动策略下限值
     int m_inputArenaFrames = 200;
+    int m_outputArenaFrames = 200;
+    double m_displayConfThreshold = 0.55;
     QString m_modelPath = "/home/zzx/code/Qt/CudaForge-YOLO/src/engines/yolo26n.engine";
     std::vector<QString> m_classNames;
     QDateTime m_detectionStartTime;

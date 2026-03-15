@@ -46,7 +46,7 @@ public Q_SLOTS:
     void setTargetFPS(int fps);
 
     // 是否允许目标帧率超过原生帧率（压测用）
-    void setAllowOverNativeFPS(bool allow) { allow_over_native_fps_ = allow; }
+    void setAllowOverNativeFPS(bool allow);
 
     // 获取当前目标帧率
     int getTargetFPS() const { return target_fps_.load(); }
@@ -96,6 +96,10 @@ Q_SIGNALS:
     void playbackFinished(int channel_id);
 
 private:
+    bool processImageSource();
+    bool enqueueDetectionTensorFromNV12Frame(const AVFrame* frame);
+    bool enqueueDetectionTensorFromRGBA(const uint8_t* dev_rgba, int width, int height, int pitch);
+
     // 内部初始化函数：负责寻找并激活 CUDA 硬件
     bool initHardware();
 

@@ -213,9 +213,13 @@ bool VideoDemuxer::isOpen() const {
 }
 
 void VideoDemuxer::setSpeed(float speed) {
-    if (speed > 0.1f && speed <= 10.0f) {
+    if (speed > 0.1f && speed <= 100.0f) {
         speed_.store(speed, std::memory_order_relaxed);
     }
+}
+
+void VideoDemuxer::setPacingEnabled(bool enabled) {
+    pacing_enabled_.store(enabled, std::memory_order_relaxed);
 }
 
 void VideoDemuxer::setPaused(bool paused) {
@@ -264,15 +268,17 @@ void VideoDemuxer::demuxLoop() {
         }
         av_packet_unref(pkt);
 
-        // 根据播放速率调整帧间隔
-        float current_speed = speed_.load(std::memory_order_relaxed);
-        int target_interval_ms = static_cast<int>(base_interval_ms / current_speed);
-        if (target_interval_ms < 1) target_interval_ms = 1;
+        if (pacing_enabled_.load(std::memory_order_relaxed)) {
+            // 根据播放速率调整帧间隔
+            float current_speed = speed_.load(std::memory_order_relaxed);
+            int target_interval_ms = static_cast<int>(base_interval_ms / current_speed);
+            if (target_interval_ms < 1) target_interval_ms = 1;
 
-        auto end_time = std::chrono::steady_clock::now();
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
-        if (elapsed < target_interval_ms) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(target_interval_ms - elapsed));
+            auto end_time = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
+            if (elapsed < target_interval_ms) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(target_interval_ms - elapsed));
+            }
         }
     }
     av_packet_free(&pkt);

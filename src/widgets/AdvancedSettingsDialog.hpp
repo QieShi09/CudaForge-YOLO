@@ -7,6 +7,7 @@
 #include <atomic>
 
 class QSpinBox;
+class QDoubleSpinBox;
 class QLineEdit;
 class QPushButton;
 class QLabel;
@@ -14,6 +15,7 @@ class QProgressBar;
 class QGroupBox;
 class QComboBox;
 class QSizeGrip;
+class ArenaStateBar;
 namespace Ui { class AdvancedSettingsDialog; }
 
 /**
@@ -27,6 +29,7 @@ public:
     struct Settings {
         int baseSlots = 4;
         int inputArenaFrames = 200;
+        int outputArenaFrames = 200;
         int workerCount = 2;        // 与 inferenceStreams 绑定
         int inferenceStreams = 2;   // 推理并行 worker 数（每 worker 固定 1 context + 1 stream）
         int workerMaxBatch = 16;
@@ -34,6 +37,7 @@ public:
         QString modelPath = "/home/zzx/code/Qt/CudaForge-YOLO/src/engines/yolo26n.engine";
         QString classesPath = "src/engines/class.txt";
         int statsInterval = 5;  // 性能统计间隔（秒）
+        double displayConfThreshold = 0.55;
     };
 
     explicit AdvancedSettingsDialog(QWidget *parent = nullptr);
@@ -87,6 +91,7 @@ private:
     QLineEdit*   m_editModelPath = nullptr;
     QLineEdit*   m_editClassesPath = nullptr;
     QSpinBox*    m_spinStatsInterval = nullptr;
+    QDoubleSpinBox* m_spinDisplayConf = nullptr;
     QPushButton* m_btnBrowseModel = nullptr;
     QPushButton* m_btnBrowseClasses = nullptr;
     QPushButton* m_btnApply = nullptr;
@@ -102,6 +107,10 @@ private:
     QLabel*       m_lblDecoderCount = nullptr;
     QLabel*       m_lblInputArena = nullptr;
     QLabel*       m_lblOutputArena = nullptr;
+    ArenaStateBar* m_barInputArenaState = nullptr;
+    ArenaStateBar* m_barOutputArenaState = nullptr;
+    QLabel*       m_lblInputArenaStates = nullptr;
+    QLabel*       m_lblOutputArenaStates = nullptr;
     QLabel*       m_lblSlotPool = nullptr;
     QProgressBar* m_barSlotPool = nullptr;
     QLabel*       m_lblDetQueue = nullptr;
@@ -131,6 +140,10 @@ private:
     QTimer*       m_dashTimer = nullptr;
     QString       m_lastDashboardText;
     QStringList   m_dashboardHistory;   // 最近 N 次仪表盘快照
+    double        m_decodeFpsEma = 0.0;
+    double        m_inferFpsEma = 0.0;
+    double        m_displayFpsEma = 0.0;
+    bool          m_fpsEmaInited = false;
 
     // 压力测试运行时状态
     std::atomic<bool> m_loadTestRunning{false};

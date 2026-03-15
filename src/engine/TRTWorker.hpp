@@ -38,7 +38,7 @@ public:
 
     void shutdown() {
         if (context_) {
-            delete context_;
+            TRTDetector::getInstance().destroyContext(context_);
             context_ = nullptr;
         }
         if (stream_) {
