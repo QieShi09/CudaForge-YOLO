@@ -22,8 +22,8 @@ QT_BEGIN_MOC_NAMESPACE
 QT_WARNING_PUSH
 QT_WARNING_DISABLE_DEPRECATED
 struct qt_meta_stringdata_VideoDecoder_t {
-    const uint offsetsAndSize[80];
-    char stringdata0[489];
+    const uint offsetsAndSize[98];
+    char stringdata0[629];
 };
 #define QT_MOC_LITERAL(ofs, len) \
     uint(offsetof(qt_meta_stringdata_VideoDecoder_t, stringdata0) + ofs), len 
@@ -60,15 +60,24 @@ QT_MOC_LITERAL(281, 10), // "isFileMode"
 QT_MOC_LITERAL(292, 15), // "setChannelEpoch"
 QT_MOC_LITERAL(308, 8), // "uint64_t"
 QT_MOC_LITERAL(317, 5), // "epoch"
-QT_MOC_LITERAL(323, 21), // "totalDecoderVramBytes"
-QT_MOC_LITERAL(345, 6), // "size_t"
-QT_MOC_LITERAL(352, 29), // "totalStandaloneFrameVramBytes"
-QT_MOC_LITERAL(382, 28), // "registerStandaloneFrameAlloc"
-QT_MOC_LITERAL(411, 5), // "bytes"
-QT_MOC_LITERAL(417, 27), // "registerStandaloneFrameFree"
-QT_MOC_LITERAL(445, 14), // "hwDecoderCount"
-QT_MOC_LITERAL(460, 14), // "swDecoderCount"
-QT_MOC_LITERAL(475, 13) // "maxHwDecoders"
+QT_MOC_LITERAL(323, 15), // "initDisplayPool"
+QT_MOC_LITERAL(339, 6), // "size_t"
+QT_MOC_LITERAL(346, 18), // "releaseDisplayPool"
+QT_MOC_LITERAL(365, 24), // "getDisplayBufferFromPool"
+QT_MOC_LITERAL(390, 8), // "uint8_t*"
+QT_MOC_LITERAL(399, 25), // "returnDisplayBufferToPool"
+QT_MOC_LITERAL(425, 3), // "ptr"
+QT_MOC_LITERAL(429, 28), // "releaseDisplayBufferCallback"
+QT_MOC_LITERAL(458, 6), // "opaque"
+QT_MOC_LITERAL(465, 4), // "data"
+QT_MOC_LITERAL(470, 21), // "totalDecoderVramBytes"
+QT_MOC_LITERAL(492, 29), // "totalStandaloneFrameVramBytes"
+QT_MOC_LITERAL(522, 28), // "registerStandaloneFrameAlloc"
+QT_MOC_LITERAL(551, 5), // "bytes"
+QT_MOC_LITERAL(557, 27), // "registerStandaloneFrameFree"
+QT_MOC_LITERAL(585, 14), // "hwDecoderCount"
+QT_MOC_LITERAL(600, 14), // "swDecoderCount"
+QT_MOC_LITERAL(615, 13) // "maxHwDecoders"
 
     },
     "VideoDecoder\0playbackFinished\0\0"
@@ -80,7 +89,11 @@ QT_MOC_LITERAL(475, 13) // "maxHwDecoders"
     "int64_t\0timestamp_ms\0getDuration\0"
     "getCurrentPosition\0isEOF\0isFileMode\0"
     "setChannelEpoch\0uint64_t\0epoch\0"
-    "totalDecoderVramBytes\0size_t\0"
+    "initDisplayPool\0size_t\0releaseDisplayPool\0"
+    "getDisplayBufferFromPool\0uint8_t*\0"
+    "returnDisplayBufferToPool\0ptr\0"
+    "releaseDisplayBufferCallback\0opaque\0"
+    "data\0totalDecoderVramBytes\0"
     "totalStandaloneFrameVramBytes\0"
     "registerStandaloneFrameAlloc\0bytes\0"
     "registerStandaloneFrameFree\0hwDecoderCount\0"
@@ -94,7 +107,7 @@ static const uint qt_meta_data_VideoDecoder[] = {
       10,       // revision
        0,       // classname
        0,    0, // classinfo
-      24,   14, // methods
+      29,   14, // methods
        0,    0, // properties
        0,    0, // enums/sets
        0,    0, // constructors
@@ -102,32 +115,37 @@ static const uint qt_meta_data_VideoDecoder[] = {
        1,       // signalCount
 
  // signals: name, argc, parameters, tag, flags, initial metatype offsets
-       1,    1,  158,    2, 0x06,    1 /* Public */,
+       1,    1,  188,    2, 0x06,    1 /* Public */,
 
  // slots: name, argc, parameters, tag, flags, initial metatype offsets
-       4,    0,  161,    2, 0x0a,    3 /* Public */,
-       5,    0,  162,    2, 0x0a,    4 /* Public */,
-       6,    2,  163,    2, 0x0a,    5 /* Public */,
-       9,    1,  168,    2, 0x0a,    8 /* Public */,
-      11,    1,  171,    2, 0x0a,   10 /* Public */,
-      13,    1,  174,    2, 0x0a,   12 /* Public */,
-      15,    0,  177,    2, 0x10a,   14 /* Public | MethodIsConst  */,
-      16,    0,  178,    2, 0x0a,   15 /* Public */,
-      17,    1,  179,    2, 0x0a,   16 /* Public */,
-      19,    1,  182,    2, 0x0a,   18 /* Public */,
-      21,    1,  185,    2, 0x0a,   20 /* Public */,
-      24,    0,  188,    2, 0x10a,   22 /* Public | MethodIsConst  */,
-      25,    0,  189,    2, 0x10a,   23 /* Public | MethodIsConst  */,
-      26,    0,  190,    2, 0x10a,   24 /* Public | MethodIsConst  */,
-      27,    0,  191,    2, 0x10a,   25 /* Public | MethodIsConst  */,
-      28,    1,  192,    2, 0x0a,   26 /* Public */,
-      31,    0,  195,    2, 0x0a,   28 /* Public */,
-      33,    0,  196,    2, 0x0a,   29 /* Public */,
-      34,    1,  197,    2, 0x0a,   30 /* Public */,
-      36,    1,  200,    2, 0x0a,   32 /* Public */,
-      37,    0,  203,    2, 0x0a,   34 /* Public */,
-      38,    0,  204,    2, 0x0a,   35 /* Public */,
-      39,    0,  205,    2, 0x0a,   36 /* Public */,
+       4,    0,  191,    2, 0x0a,    3 /* Public */,
+       5,    0,  192,    2, 0x0a,    4 /* Public */,
+       6,    2,  193,    2, 0x0a,    5 /* Public */,
+       9,    1,  198,    2, 0x0a,    8 /* Public */,
+      11,    1,  201,    2, 0x0a,   10 /* Public */,
+      13,    1,  204,    2, 0x0a,   12 /* Public */,
+      15,    0,  207,    2, 0x10a,   14 /* Public | MethodIsConst  */,
+      16,    0,  208,    2, 0x0a,   15 /* Public */,
+      17,    1,  209,    2, 0x0a,   16 /* Public */,
+      19,    1,  212,    2, 0x0a,   18 /* Public */,
+      21,    1,  215,    2, 0x0a,   20 /* Public */,
+      24,    0,  218,    2, 0x10a,   22 /* Public | MethodIsConst  */,
+      25,    0,  219,    2, 0x10a,   23 /* Public | MethodIsConst  */,
+      26,    0,  220,    2, 0x10a,   24 /* Public | MethodIsConst  */,
+      27,    0,  221,    2, 0x10a,   25 /* Public | MethodIsConst  */,
+      28,    1,  222,    2, 0x0a,   26 /* Public */,
+      31,    2,  225,    2, 0x0a,   28 /* Public */,
+      33,    0,  230,    2, 0x0a,   31 /* Public */,
+      34,    0,  231,    2, 0x0a,   32 /* Public */,
+      36,    1,  232,    2, 0x0a,   33 /* Public */,
+      38,    2,  235,    2, 0x0a,   35 /* Public */,
+      41,    0,  240,    2, 0x0a,   38 /* Public */,
+      42,    0,  241,    2, 0x0a,   39 /* Public */,
+      43,    1,  242,    2, 0x0a,   40 /* Public */,
+      45,    1,  245,    2, 0x0a,   42 /* Public */,
+      46,    0,  248,    2, 0x0a,   44 /* Public */,
+      47,    0,  249,    2, 0x0a,   45 /* Public */,
+      48,    0,  250,    2, 0x0a,   46 /* Public */,
 
  // signals: parameters
     QMetaType::Void, QMetaType::Int,    3,
@@ -149,10 +167,15 @@ static const uint qt_meta_data_VideoDecoder[] = {
     QMetaType::Bool,
     QMetaType::Bool,
     QMetaType::Void, 0x80000000 | 29,   30,
+    QMetaType::Void, 0x80000000 | 32, 0x80000000 | 32,    7,    8,
+    QMetaType::Void,
+    0x80000000 | 35,
+    QMetaType::Void, 0x80000000 | 35,   37,
+    QMetaType::Void, QMetaType::VoidStar, 0x80000000 | 35,   39,   40,
     0x80000000 | 32,
     0x80000000 | 32,
-    QMetaType::Void, 0x80000000 | 32,   35,
-    QMetaType::Void, 0x80000000 | 32,   35,
+    QMetaType::Void, 0x80000000 | 32,   44,
+    QMetaType::Void, 0x80000000 | 32,   44,
     QMetaType::Int,
     QMetaType::Int,
     QMetaType::Int,
@@ -189,17 +212,23 @@ void VideoDecoder::qt_static_metacall(QObject *_o, QMetaObject::Call _c, int _id
         case 15: { bool _r = _t->isFileMode();
             if (_a[0]) *reinterpret_cast< bool*>(_a[0]) = std::move(_r); }  break;
         case 16: _t->setChannelEpoch((*reinterpret_cast< std::add_pointer_t<uint64_t>>(_a[1]))); break;
-        case 17: { size_t _r = _t->totalDecoderVramBytes();
+        case 17: _t->initDisplayPool((*reinterpret_cast< std::add_pointer_t<size_t>>(_a[1])),(*reinterpret_cast< std::add_pointer_t<size_t>>(_a[2]))); break;
+        case 18: _t->releaseDisplayPool(); break;
+        case 19: { uint8_t* _r = _t->getDisplayBufferFromPool();
+            if (_a[0]) *reinterpret_cast< uint8_t**>(_a[0]) = std::move(_r); }  break;
+        case 20: _t->returnDisplayBufferToPool((*reinterpret_cast< std::add_pointer_t<uint8_t*>>(_a[1]))); break;
+        case 21: _t->releaseDisplayBufferCallback((*reinterpret_cast< std::add_pointer_t<void*>>(_a[1])),(*reinterpret_cast< std::add_pointer_t<uint8_t*>>(_a[2]))); break;
+        case 22: { size_t _r = _t->totalDecoderVramBytes();
             if (_a[0]) *reinterpret_cast< size_t*>(_a[0]) = std::move(_r); }  break;
-        case 18: { size_t _r = _t->totalStandaloneFrameVramBytes();
+        case 23: { size_t _r = _t->totalStandaloneFrameVramBytes();
             if (_a[0]) *reinterpret_cast< size_t*>(_a[0]) = std::move(_r); }  break;
-        case 19: _t->registerStandaloneFrameAlloc((*reinterpret_cast< std::add_pointer_t<size_t>>(_a[1]))); break;
-        case 20: _t->registerStandaloneFrameFree((*reinterpret_cast< std::add_pointer_t<size_t>>(_a[1]))); break;
-        case 21: { int _r = _t->hwDecoderCount();
+        case 24: _t->registerStandaloneFrameAlloc((*reinterpret_cast< std::add_pointer_t<size_t>>(_a[1]))); break;
+        case 25: _t->registerStandaloneFrameFree((*reinterpret_cast< std::add_pointer_t<size_t>>(_a[1]))); break;
+        case 26: { int _r = _t->hwDecoderCount();
             if (_a[0]) *reinterpret_cast< int*>(_a[0]) = std::move(_r); }  break;
-        case 22: { int _r = _t->swDecoderCount();
+        case 27: { int _r = _t->swDecoderCount();
             if (_a[0]) *reinterpret_cast< int*>(_a[0]) = std::move(_r); }  break;
-        case 23: { int _r = _t->maxHwDecoders();
+        case 28: { int _r = _t->maxHwDecoders();
             if (_a[0]) *reinterpret_cast< int*>(_a[0]) = std::move(_r); }  break;
         default: ;
         }
@@ -223,7 +252,7 @@ const QMetaObject VideoDecoder::staticMetaObject = { {
     nullptr,
 qt_incomplete_metaTypeArray<qt_meta_stringdata_VideoDecoder_t
 , QtPrivate::TypeAndForceComplete<VideoDecoder, std::true_type>, QtPrivate::TypeAndForceComplete<void, std::false_type>, QtPrivate::TypeAndForceComplete<int, std::false_type>
-, QtPrivate::TypeAndForceComplete<void, std::false_type>, QtPrivate::TypeAndForceComplete<void, std::false_type>, QtPrivate::TypeAndForceComplete<void, std::false_type>, QtPrivate::TypeAndForceComplete<int, std::false_type>, QtPrivate::TypeAndForceComplete<int, std::false_type>, QtPrivate::TypeAndForceComplete<void, std::false_type>, QtPrivate::TypeAndForceComplete<bool, std::false_type>, QtPrivate::TypeAndForceComplete<void, std::false_type>, QtPrivate::TypeAndForceComplete<int, std::false_type>, QtPrivate::TypeAndForceComplete<void, std::false_type>, QtPrivate::TypeAndForceComplete<bool, std::false_type>, QtPrivate::TypeAndForceComplete<int, std::false_type>, QtPrivate::TypeAndForceComplete<double, std::false_type>, QtPrivate::TypeAndForceComplete<void, std::false_type>, QtPrivate::TypeAndForceComplete<bool, std::false_type>, QtPrivate::TypeAndForceComplete<void, std::false_type>, QtPrivate::TypeAndForceComplete<float, std::false_type>, QtPrivate::TypeAndForceComplete<void, std::false_type>, QtPrivate::TypeAndForceComplete<int64_t, std::false_type>, QtPrivate::TypeAndForceComplete<int64_t, std::false_type>, QtPrivate::TypeAndForceComplete<int64_t, std::false_type>, QtPrivate::TypeAndForceComplete<bool, std::false_type>, QtPrivate::TypeAndForceComplete<bool, std::false_type>, QtPrivate::TypeAndForceComplete<void, std::false_type>, QtPrivate::TypeAndForceComplete<uint64_t, std::false_type>, QtPrivate::TypeAndForceComplete<size_t, std::false_type>, QtPrivate::TypeAndForceComplete<size_t, std::false_type>, QtPrivate::TypeAndForceComplete<void, std::false_type>, QtPrivate::TypeAndForceComplete<size_t, std::false_type>, QtPrivate::TypeAndForceComplete<void, std::false_type>, QtPrivate::TypeAndForceComplete<size_t, std::false_type>, QtPrivate::TypeAndForceComplete<int, std::false_type>, QtPrivate::TypeAndForceComplete<int, std::false_type>, QtPrivate::TypeAndForceComplete<int, std::false_type>
+, QtPrivate::TypeAndForceComplete<void, std::false_type>, QtPrivate::TypeAndForceComplete<void, std::false_type>, QtPrivate::TypeAndForceComplete<void, std::false_type>, QtPrivate::TypeAndForceComplete<int, std::false_type>, QtPrivate::TypeAndForceComplete<int, std::false_type>, QtPrivate::TypeAndForceComplete<void, std::false_type>, QtPrivate::TypeAndForceComplete<bool, std::false_type>, QtPrivate::TypeAndForceComplete<void, std::false_type>, QtPrivate::TypeAndForceComplete<int, std::false_type>, QtPrivate::TypeAndForceComplete<void, std::false_type>, QtPrivate::TypeAndForceComplete<bool, std::false_type>, QtPrivate::TypeAndForceComplete<int, std::false_type>, QtPrivate::TypeAndForceComplete<double, std::false_type>, QtPrivate::TypeAndForceComplete<void, std::false_type>, QtPrivate::TypeAndForceComplete<bool, std::false_type>, QtPrivate::TypeAndForceComplete<void, std::false_type>, QtPrivate::TypeAndForceComplete<float, std::false_type>, QtPrivate::TypeAndForceComplete<void, std::false_type>, QtPrivate::TypeAndForceComplete<int64_t, std::false_type>, QtPrivate::TypeAndForceComplete<int64_t, std::false_type>, QtPrivate::TypeAndForceComplete<int64_t, std::false_type>, QtPrivate::TypeAndForceComplete<bool, std::false_type>, QtPrivate::TypeAndForceComplete<bool, std::false_type>, QtPrivate::TypeAndForceComplete<void, std::false_type>, QtPrivate::TypeAndForceComplete<uint64_t, std::false_type>, QtPrivate::TypeAndForceComplete<void, std::false_type>, QtPrivate::TypeAndForceComplete<size_t, std::false_type>, QtPrivate::TypeAndForceComplete<size_t, std::false_type>, QtPrivate::TypeAndForceComplete<void, std::false_type>, QtPrivate::TypeAndForceComplete<uint8_t *, std::false_type>, QtPrivate::TypeAndForceComplete<void, std::false_type>, QtPrivate::TypeAndForceComplete<uint8_t *, std::false_type>, QtPrivate::TypeAndForceComplete<void, std::false_type>, QtPrivate::TypeAndForceComplete<void *, std::false_type>, QtPrivate::TypeAndForceComplete<uint8_t *, std::false_type>, QtPrivate::TypeAndForceComplete<size_t, std::false_type>, QtPrivate::TypeAndForceComplete<size_t, std::false_type>, QtPrivate::TypeAndForceComplete<void, std::false_type>, QtPrivate::TypeAndForceComplete<size_t, std::false_type>, QtPrivate::TypeAndForceComplete<void, std::false_type>, QtPrivate::TypeAndForceComplete<size_t, std::false_type>, QtPrivate::TypeAndForceComplete<int, std::false_type>, QtPrivate::TypeAndForceComplete<int, std::false_type>, QtPrivate::TypeAndForceComplete<int, std::false_type>
 
 
 >,
@@ -250,13 +279,13 @@ int VideoDecoder::qt_metacall(QMetaObject::Call _c, int _id, void **_a)
     if (_id < 0)
         return _id;
     if (_c == QMetaObject::InvokeMetaMethod) {
-        if (_id < 24)
+        if (_id < 29)
             qt_static_metacall(this, _c, _id, _a);
-        _id -= 24;
+        _id -= 29;
     } else if (_c == QMetaObject::RegisterMethodArgumentMetaType) {
-        if (_id < 24)
+        if (_id < 29)
             *reinterpret_cast<QMetaType *>(_a[0]) = QMetaType();
-        _id -= 24;
+        _id -= 29;
     }
     return _id;
 }

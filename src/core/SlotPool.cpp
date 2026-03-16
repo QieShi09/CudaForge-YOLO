@@ -55,6 +55,11 @@ Slot* SlotPool::pop() {
     if (stop_.load(std::memory_order_acquire) || free_slots_.empty()) return nullptr;
     Slot* slot = free_slots_.front();
     free_slots_.pop_front();
+    
+    // Debug output requested by user
+    printf("[SlotPool] Popped slot %d. Active/Total: %zu/%zu\n", 
+           slot->id_, (all_slots_.size() - free_slots_.size()), all_slots_.size());
+
     size_t active = (all_slots_.size() >= free_slots_.size()) ? (all_slots_.size() - free_slots_.size()) : 0;
     size_t peak = peak_active_slots_.load(std::memory_order_relaxed);
     while (active > peak && !peak_active_slots_.compare_exchange_weak(peak, active, std::memory_order_relaxed)) {}
@@ -67,6 +72,11 @@ Slot* SlotPool::tryPop() {
     if (stop_.load(std::memory_order_acquire) || free_slots_.empty()) return nullptr;
     Slot* slot = free_slots_.front();
     free_slots_.pop_front();
+
+    // Debug output requested by user
+    printf("[SlotPool] TryPopped slot %d. Active/Total: %zu/%zu\n", 
+           slot->id_, (all_slots_.size() - free_slots_.size()), all_slots_.size());
+
     size_t active = (all_slots_.size() >= free_slots_.size()) ? (all_slots_.size() - free_slots_.size()) : 0;
     size_t peak = peak_active_slots_.load(std::memory_order_relaxed);
     while (active > peak && !peak_active_slots_.compare_exchange_weak(peak, active, std::memory_order_relaxed)) {}
@@ -79,6 +89,11 @@ void SlotPool::push(Slot* slot) {
     std::lock_guard<std::mutex> lk(mutex_);
     slot->clear();
     free_slots_.push_back(slot);
+    
+    // Debug output requested by user
+    printf("[SlotPool] Pushed (Returned) slot %d. Active/Total: %zu/%zu\n", 
+           slot->id_, (all_slots_.size() - free_slots_.size()), all_slots_.size());
+           
     cv_.notify_one();
 }
 

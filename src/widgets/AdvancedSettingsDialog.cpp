@@ -5,6 +5,7 @@
 #include <QHBoxLayout>
 #include <QFormLayout>
 #include <QGroupBox>
+#include <QCheckBox>
 #include <QSpinBox>
 #include <QDoubleSpinBox>
 #include <QLineEdit>
@@ -71,11 +72,13 @@ public:
         double begin = 0.0;
         double end = 0.0;
         QColor color;
+        QString text;
+        QColor textColor = Qt::black;
     };
 
     explicit ArenaStateBar(QWidget* parent = nullptr) : QWidget(parent) {
-        setMinimumHeight(16);
-        setMaximumHeight(18);
+        setMinimumHeight(24);
+        setMaximumHeight(26);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     }
 
@@ -91,17 +94,34 @@ protected:
         QRect r = rect().adjusted(0, 0, -1, -1);
         painter.fillRect(r, QColor("#F8FAFC"));
 
+        QFont f = font();
+        f.setPixelSize(10);
+        f.setBold(true);
+        painter.setFont(f);
+
         const int width = r.width();
+        
+        // Draw background segments first
         for (const auto& s : segments_) {
-            if (s.end <= s.begin) {
-                continue;
-            }
+            if (s.end <= s.begin) continue;
             int x0 = r.left() + static_cast<int>(std::floor(s.begin * width));
             int x1 = r.left() + static_cast<int>(std::ceil(s.end * width));
-            if (x1 <= x0) {
-                x1 = x0 + 1;
+            if (x1 <= x0) x1 = x0 + 1;
+            
+            QRect segRect(x0, r.top(), x1 - x0, r.height());
+            painter.fillRect(segRect, s.color);
+            
+            // Draw separator line
+            if (s.end < 1.0) {
+                painter.setPen(QColor(255,255,255,100));
+                painter.drawLine(x1, r.top(), x1, r.bottom());
             }
-            painter.fillRect(QRect(x0, r.top(), x1 - x0, r.height()), s.color);
+
+            // Draw text if available and enough space
+            if (!s.text.isEmpty() && (x1 - x0) > 20) {
+                painter.setPen(s.textColor);
+                painter.drawText(segRect, Qt::AlignCenter, s.text);
+            }
         }
 
         painter.setPen(QColor("#64748B"));
@@ -116,8 +136,8 @@ AdvancedSettingsDialog::Settings AdvancedSettingsDialog::defaultSettings()
 {
     Settings s;
     s.baseSlots      = 4;
-    s.inputArenaFrames = 200;
-    s.outputArenaFrames = 200;
+    s.inputArenaFrames = 30;
+    s.outputArenaFrames = 30;
     s.workerCount    = 2;
     s.inferenceStreams = 2;
     s.workerMaxBatch = 16;
@@ -126,6 +146,7 @@ AdvancedSettingsDialog::Settings AdvancedSettingsDialog::defaultSettings()
     s.classesPath    = "src/engines/class.txt";
     s.statsInterval  = 5;
     s.displayConfThreshold = 0.55;
+    s.autoLoop       = false;
     return s;
 }
 
@@ -146,6 +167,7 @@ AdvancedSettingsDialog::Settings AdvancedSettingsDialog::loadFromDisk()
     s.classesPath    = qs.value("classesPath", def.classesPath).toString();
     s.statsInterval  = qs.value("statsInterval", def.statsInterval).toInt();
     s.displayConfThreshold = qs.value("displayConfThreshold", def.displayConfThreshold).toDouble();
+    s.autoLoop       = qs.value("autoLoop", def.autoLoop).toBool();
     return s;
 }
 
@@ -163,6 +185,7 @@ void AdvancedSettingsDialog::saveToDisk(const Settings& s)
     qs.setValue("classesPath", s.classesPath);
     qs.setValue("statsInterval", s.statsInterval);
     qs.setValue("displayConfThreshold", s.displayConfThreshold);
+    qs.setValue("autoLoop", s.autoLoop);
     qs.sync();
 }
 
@@ -176,8 +199,8 @@ AdvancedSettingsDialog::AdvancedSettingsDialog(QWidget *parent)
     flags &= ~Qt::WindowContextHelpButtonHint;
     setWindowFlags(flags);
     setWindowTitle("Advanced Settings");
-    setMinimumSize(900, 620);
-    resize(1280, 820);
+    setMinimumSize(860, 580);
+    resize(1000, 680);
     buildUI();
 
     m_dashTimer = new QTimer(this);
@@ -258,20 +281,36 @@ void AdvancedSettingsDialog::applyModernStyle()
             border-radius: 8px;
             padding: 4px 10px;
         }
-        QPushButton#titleCloseButton {
-            min-width: 22px;
-            max-width: 22px;
-            min-height: 22px;
-            max-height: 22px;
-            border-radius: 5px;
-            background: #fbe3e1;
-            border: 1px solid #edc9c5;
-            color: #B91C1C;
-            font-weight: 700;
+        /* Title Bar Buttons - Match MainWindow Exactly */
+        QPushButton#titleMinButton,
+        QPushButton#titleMaxButton,
+        QPushButton#titleCloseButtonMain {
+            min-width: 24px;
+            max-width: 24px;
+            min-height: 24px;
+            max-height: 24px;
+            border-radius: 6px;
             font-size: 12px;
             padding: 0px;
+            font-weight: 700;
         }
-        QPushButton#titleCloseButton:hover {
+        QPushButton#titleMinButton,
+        QPushButton#titleMaxButton {
+            background: #edf4f1;
+            color: #355260;
+            border: 1px solid #b9ccc5;
+        }
+        QPushButton#titleMinButton:hover,
+        QPushButton#titleMaxButton:hover {
+            background: #dcebe5;
+            border: 1px solid #a7bfb6;
+        }
+        QPushButton#titleCloseButtonMain {
+            background: #fbe3e1;
+            color: #B91C1C;
+            border: 1px solid #edc9c5;
+        }
+        QPushButton#titleCloseButtonMain:hover {
             background: #f7d4d0;
             border: 1px solid #e5b9b2;
         }
@@ -441,6 +480,10 @@ void AdvancedSettingsDialog::buildUI()
         m_spinDisplayConf->setToolTip("Display/filter confidence threshold for detections.");
         auto *lbl = new QLabel("Display Conf / 显示置信度:", this);
         lbl->setProperty("role", "rowTitle");
+
+        m_chkAutoLoop = new QCheckBox("Auto Loop Video / 视频自动循环", this);
+        m_chkAutoLoop->setToolTip("Automatically replay video when it ends");
+        paramsForm->insertRow(7, m_chkAutoLoop);
         paramsForm->insertRow(6, lbl, m_spinDisplayConf);
     }
 
@@ -619,56 +662,191 @@ void AdvancedSettingsDialog::buildUI()
         }
     }
 
-    if (auto *colLayout = this->findChild<QHBoxLayout*>("dashColumnsLayout")) {
-        colLayout->setContentsMargins(2, 2, 2, 2);
-        colLayout->setSpacing(8);
-        colLayout->setStretch(0, 1);
-        colLayout->setStretch(1, 1);
-        colLayout->setStretch(2, 1);
-        colLayout->setSizeConstraint(QLayout::SetDefaultConstraint);
-    }
-
-    if (auto *outer = this->findChild<QVBoxLayout*>("dashOuterLayout")) {
-        outer->setSpacing(6);
-    }
-
-    auto normalizeCol = [this](const char* layoutName) {
-        if (auto *layout = this->findChild<QVBoxLayout*>(layoutName)) {
-            layout->setContentsMargins(0, 0, 0, 0);
-            layout->setSpacing(6);
-        }
-    };
-    normalizeCol("leftColumnLayout");
-    normalizeCol("middleColumnLayout");
-    normalizeCol("rightColumnLayout");
-
-    if (auto *leftCol = this->findChild<QVBoxLayout*>("leftColumnLayout")) {
-        leftCol->setStretch(0, 0);
-        leftCol->setStretch(1, 0);
-        leftCol->setStretch(2, 1);
-    }
-    if (auto *midCol = this->findChild<QVBoxLayout*>("middleColumnLayout")) {
-        midCol->setStretch(0, 0);
-        midCol->setStretch(1, 0);
-        midCol->setStretch(2, 1);
-    }
-    if (auto *rightCol = this->findChild<QVBoxLayout*>("rightColumnLayout")) {
-        rightCol->setStretch(0, 0);
-        rightCol->setStretch(1, 1);
-    }
-
-    if (auto *cardSlotPool = this->findChild<QWidget*>("cardSlotPool")) {
-        cardSlotPool->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
-    }
-    if (auto *cardArena = this->findChild<QWidget*>("cardArena")) {
-        cardArena->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
-    }
-    if (auto *cardWorker = this->findChild<QWidget*>("cardWorker")) {
-        cardWorker->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+    if (auto *cardDetQueue = this->findChild<QWidget*>("cardDetQueue")) {
+        cardDetQueue->hide();
     }
     if (auto *cardBottleneck = this->findChild<QWidget*>("cardBottleneck")) {
-        cardBottleneck->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+        cardBottleneck->hide();
     }
+
+    // Rearrange layout: Nested Layouts (replacing previous Grid/Columns logic)
+    QWidget* dashPage = this->findChild<QWidget*>("dashPage");
+    
+    // We assume dashPage initially has a QVBoxLayout (from UI file) named maybe "verticalLayoutDash" or managed by form.
+    // Let's find the main layout of dashPage
+    if (dashPage && dashPage->layout()) {
+        QVBoxLayout* dashOuter = qobject_cast<QVBoxLayout*>(dashPage->layout());
+        
+        // Clean up previous layouts (dashColumnsLayout, dashGridLayout, etc.)
+        if (dashOuter) {
+            // Remove existing items from layout 0 (where we insert our stuff)
+            // Just looking for specific children is safer
+            QList<QByteArray> knownLayoutNames = { "dashColumnsLayout", "dashGridLayout", "dashMainHBox" };
+            
+            for (int i = dashOuter->count() - 1; i >= 0; --i) {
+                QLayoutItem* item = dashOuter->itemAt(i);
+                if (item->layout()) {
+                    QString name = item->layout()->objectName();
+                    if (knownLayoutNames.contains(name.toLatin1())) {
+                        QLayout* l = item->layout();
+                        l->setParent(nullptr); // Detach
+                        // Reparent widgets to dashPage so they aren't deleted?
+                        // Actually we want widgets to stay, just layout to go.
+                        // But standard behavior: if you delete layout, widgets might remain if they are children of widget.
+                        // However, we plan to re-add them.
+                        delete l; 
+                    }
+                }
+            }
+            
+            // Re-fetch widgets to ensure we have pointers
+            QWidget *wGpuMem = this->findChild<QWidget*>("cardGpuMem");
+            QWidget *wSlotPool = this->findChild<QWidget*>("cardSlotPool");
+            QWidget *wVram = this->findChild<QWidget*>("cardVram");
+            QWidget *wArena = this->findChild<QWidget*>("cardArena");
+            QWidget *wThroughput = this->findChild<QWidget*>("cardThroughput");
+            QWidget *wWorker = this->findChild<QWidget*>("cardWorker");
+            QWidget *wLoadTest = this->findChild<QWidget*>("cardLoadTest");
+            
+            // --- Create New Structure ---
+            auto* mainHBox = new QHBoxLayout();
+            mainHBox->setObjectName("dashMainHBox");
+            mainHBox->setSpacing(10);
+            mainHBox->setContentsMargins(0,0,0,0);
+            
+            // Left Panel (Col 1 + Col 2) + Bottom (LoadTest)
+            auto* leftPanelVBox = new QVBoxLayout();
+            leftPanelVBox->setSpacing(10);
+            leftPanelVBox->setContentsMargins(0,0,0,0);
+            
+            auto* leftTopHBox = new QHBoxLayout();
+            leftTopHBox->setSpacing(10);
+            leftTopHBox->setContentsMargins(0,0,0,0);
+            
+            // Col 1 VBox
+            auto* col1VBox = new QVBoxLayout();
+            col1VBox->setSpacing(10);
+            col1VBox->setContentsMargins(0,0,0,0);
+            if (wGpuMem) {
+                 col1VBox->addWidget(wGpuMem, 0, Qt::AlignTop);
+                 wGpuMem->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            }
+            if (wVram) {
+                 col1VBox->addWidget(wVram, 1); // Expand to fill
+                 wVram->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+            }
+            
+            // Col 2 VBox
+            auto* col2VBox = new QVBoxLayout();
+            col2VBox->setSpacing(10);
+            col2VBox->setContentsMargins(0,0,0,0);
+            if (wSlotPool) {
+                 col2VBox->addWidget(wSlotPool, 0, Qt::AlignTop);
+                 wSlotPool->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            }
+            if (wArena) {
+                 col2VBox->addWidget(wArena, 1); // Expand to fill
+                 wArena->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+            }
+
+            // Combine Col 1 & 2
+            leftTopHBox->addLayout(col1VBox, 1);
+            leftTopHBox->addLayout(col2VBox, 1);
+            
+            leftPanelVBox->addLayout(leftTopHBox, 1); // Upper part expands
+            if (wLoadTest) {
+                leftPanelVBox->addWidget(wLoadTest, 0, Qt::AlignBottom);
+                wLoadTest->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            }
+
+            // Right Panel (Col 3)
+            auto* rightPanelVBox = new QVBoxLayout(); 
+            rightPanelVBox->setSpacing(10);
+            rightPanelVBox->setContentsMargins(0,0,0,0);
+            
+            if (wThroughput) {
+                 rightPanelVBox->addWidget(wThroughput, 1); // Expand
+                 wThroughput->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+            }
+            if (wWorker) {
+                 rightPanelVBox->addWidget(wWorker, 1); // Expand
+                 wWorker->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+            }
+            
+            mainHBox->addLayout(leftPanelVBox, 2); // 2/3 width
+            mainHBox->addLayout(rightPanelVBox, 1); // 1/3 width
+
+            dashOuter->insertLayout(0, mainHBox);
+        }
+    }
+    
+    // Add Minimize Button
+    // --- Title Bar Buttons (Replicated from MainWindow) ---
+    // Ensure 24x24 fixed size and consistent styling
+    auto configBtn = [](QPushButton* btn, const QString& text, const QString& objName) {
+        if (!btn) return;
+        btn->setText(text);
+        btn->setObjectName(objName);
+        btn->setFixedSize(24, 24);
+        btn->setCursor(Qt::PointingHandCursor);
+        // Clean style to allow QSS from applyModernStyle (which matches MainWindow) to take effect
+        btn->setStyleSheet("");
+    };
+
+    if (auto *hlay = qobject_cast<QHBoxLayout*>(m_titleBar->layout())) {
+        // Ensure we have our buttons
+        if (!m_btnShrink) {
+            m_btnShrink = new QPushButton(m_titleBar);
+            connect(m_btnShrink, &QPushButton::clicked, this, &QWidget::showMinimized);
+        }
+        if (!m_btnMax) {
+            m_btnMax = new QPushButton(m_titleBar);
+            connect(m_btnMax, &QPushButton::clicked, this, [this]() {
+                if (this->isMaximized()) {
+                    this->showNormal();
+                    m_btnMax->setText("▢");
+                } else {
+                    this->showMaximized();
+                    m_btnMax->setText("❐");
+                }
+            });
+        }
+        // m_btnCloseDialog comes from UI, just reconfigure it
+        
+        // Apply Config
+        configBtn(m_btnShrink, "—", "titleMinButton");
+        configBtn(m_btnMax, "▢", "titleMaxButton");
+        configBtn(m_btnCloseDialog, "×", "titleCloseButtonMain");
+
+        // Re-order in layout: Spacer -> Min -> Max -> Close
+        // Note: The UI file likely has a spacer. We just append to the end.
+        // Remove first to ensure order at the end
+        hlay->removeWidget(m_btnShrink);
+        hlay->removeWidget(m_btnMax);
+        hlay->removeWidget(m_btnCloseDialog);
+        
+        hlay->addWidget(m_btnShrink);
+        hlay->addWidget(m_btnMax);
+        hlay->addWidget(m_btnCloseDialog);
+    }
+
+    // Update Close button size and style
+    if (m_btnCloseDialog) {
+        m_btnCloseDialog->setFixedSize(24, 24);
+        m_btnCloseDialog->setStyleSheet(""); // clear any custom style
+        m_btnCloseDialog->setText("×");
+    }
+
+    // Move Widgets to Col 1 (Logic replaced by Grid above)
+    /*
+    auto moveWidget = [](QWidget* w, QVBoxLayout* layout) { ... };
+    moveWidget(...)
+    */
+    
+    // Adjust height policies
+    /*
+    auto setExpand = [](QWidget* w) { ... };
+    */
 
     const QStringList compactCardLayouts = {
         "vlCardGpuMem", "vlCardSlotPool", "vlCardVram",
@@ -743,6 +921,7 @@ AdvancedSettingsDialog::Settings AdvancedSettingsDialog::getSettings() const
     s.classesPath    = m_editClassesPath->text();
     s.statsInterval  = m_spinStatsInterval->value();
     s.displayConfThreshold = m_spinDisplayConf ? m_spinDisplayConf->value() : 0.55;
+    if (m_chkAutoLoop) s.autoLoop = m_chkAutoLoop->isChecked();
     return s;
 }
 
@@ -760,7 +939,11 @@ void AdvancedSettingsDialog::setSettings(const Settings& s)
     if (m_spinDisplayConf) {
         m_spinDisplayConf->setValue(std::clamp(s.displayConfThreshold, 0.01, 1.0));
     }
+    if (m_chkAutoLoop) {
+        m_chkAutoLoop->setChecked(s.autoLoop);
+    }
 }
+
 
 // ===================== 槽函数 ============================
 
@@ -1014,31 +1197,76 @@ void AdvancedSettingsDialog::refreshDashboard()
             if (total == 0) return QString("0.0");
             return QString::number(100.0 * static_cast<double>(v) / static_cast<double>(total), 'f', 1);
         };
-        if (m_lblInputArenaStates) {
-            m_lblInputArenaStates->setText(
-                QString("⬜ Free %1 (%2%)  "
-                        "🟩 Ready %3 (%4%)  "
-                        "🟧 Inflight %5 (%6%)")
-                    .arg(input_free_frames)
-                    .arg(pctText(input_free_frames, input_total_frames))
-                    .arg(input_ready_frames)
-                    .arg(pctText(input_ready_frames, input_total_frames))
-                    .arg(input_inflight_frames)
-                    .arg(pctText(input_inflight_frames, input_total_frames))
-            );
+        if (m_barInputArenaState) {
+            std::vector<ArenaStateBar::Segment> segs;
+            double pFree = static_cast<double>(input_free_frames) / input_total_frames;
+            double pReady = static_cast<double>(input_ready_frames) / input_total_frames;
+            double pInflight = static_cast<double>(input_inflight_frames) / input_total_frames;
+            
+            // Revert to "Block" style logic as requested, keeping frame counts on bars
+            // "Squares are separation... Idle, Detecting... color difference... just like before"
+            
+            // Logic: Just stack them, and use separator lines (handled by paintEvent)
+            double cur = 0.0;
+            // Order: Free? Or Inflight? Usually Free, Ready, Inflight
+            // Input Arena: Free(White), Ready(Green), Inflight(Orange)
+            
+            // Free
+            if (pFree > 0.001) {
+                segs.push_back({cur, cur + pFree, QColor("#E2E8F0"), QString::number(input_free_frames), Qt::black});
+                cur += pFree;
+            }
+            // Ready
+            if (pReady > 0.001) {
+                segs.push_back({cur, cur + pReady, QColor("#22C55E"), QString::number(input_ready_frames), Qt::white});
+                cur += pReady;
+            }
+            // Inflight
+            if (pInflight > 0.001) {
+                segs.push_back({cur, 1.0, QColor("#F97316"), QString::number(input_inflight_frames), Qt::white});
+            }
+            m_barInputArenaState->setSegments(segs);
+            
+            // Also restore text label below if requested implicitly by "like before"
+            if (m_lblInputArenaStates) {
+                m_lblInputArenaStates->setText(
+                    QString("⬜ Free: %1 (%2%)  🟩 Ready: %3 (%4%)  🟧 Inflight: %5 (%6%)")
+                        .arg(input_free_frames).arg(pctText(input_free_frames, input_total_frames))
+                        .arg(input_ready_frames).arg(pctText(input_ready_frames, input_total_frames))
+                        .arg(input_inflight_frames).arg(pctText(input_inflight_frames, input_total_frames)));
+            }
         }
-        if (m_lblOutputArenaStates) {
-            m_lblOutputArenaStates->setText(
-                QString("⬜ Free %1 (%2%)  "
-                        "🟦 Active %3 (%4%)  "
-                        "🟧 Pending %5 (%6%)")
-                    .arg(output_free_frames)
-                    .arg(pctText(output_free_frames, output_total_frames))
-                    .arg(output_active_frames)
-                    .arg(pctText(output_active_frames, output_total_frames))
-                    .arg(output_pending_frames)
-                    .arg(pctText(output_pending_frames, output_total_frames))
-            );
+
+        if (m_barOutputArenaState) {
+            std::vector<ArenaStateBar::Segment> segs;
+            double pFree = static_cast<double>(output_free_frames) / output_total_frames;
+            double pActive = static_cast<double>(output_active_frames) / output_total_frames;
+            double pPending = static_cast<double>(output_pending_frames) / output_total_frames;
+            
+            double cur = 0.0;
+            // Free means empty slot
+            if (pFree > 0.001) {
+                segs.push_back({cur, cur + pFree, QColor("#E2E8F0"), QString::number(output_free_frames), Qt::black});
+                cur += pFree;
+            }
+            // Active
+            if (pActive > 0.001) {
+                segs.push_back({cur, cur + pActive, QColor("#3B82F6"), QString::number(output_active_frames), Qt::white});
+                cur += pActive;
+            }
+            // Pending
+            if (pPending > 0.001) {
+                segs.push_back({cur, 1.0, QColor("#F97316"), QString::number(output_pending_frames), Qt::white});
+            }
+            m_barOutputArenaState->setSegments(segs);
+
+             if (m_lblOutputArenaStates) {
+                m_lblOutputArenaStates->setText(
+                    QString("⬜ Free: %1 (%2%)  🟦 Active: %3 (%4%)  🟧 Pending: %5 (%6%)")
+                        .arg(output_free_frames).arg(pctText(output_free_frames, output_total_frames))
+                        .arg(output_active_frames).arg(pctText(output_active_frames, output_total_frames))
+                        .arg(output_pending_frames).arg(pctText(output_pending_frames, output_total_frames)));
+            }
         }
     }
 
@@ -1050,35 +1278,20 @@ void AdvancedSettingsDialog::refreshDashboard()
         if (total > 0) {
             int pct = 100 * active / total;
             m_barSlotPool->setValue(pct);
+            // Format to show percentage on bar like normal QProgressBar
+            m_barSlotPool->setFormat(QString("%p% (%1 / %2)").arg(active).arg(total));
+            
             int workers = std::max(1, m_spinInferenceStreams ? m_spinInferenceStreams->value() : 1);
-            m_lblSlotPool->setText(QString("Active %1 / %2  (Free %3, workers=%4, estEvents=%5, inputInflightFrames=%6)")
-                                   .arg(active).arg(total).arg(avail)
-                                   .arg(workers)
-                                   .arg(output_active_frames_snapshot + output_pending_frames_snapshot)
-                                   .arg(input_inflight_frames_snapshot));
+            m_lblSlotPool->setText(QString("Active: %1  Free: %2  (Workers: %3)")
+                                   .arg(active).arg(avail).arg(workers));
         } else {
             m_barSlotPool->setValue(0);
             m_lblSlotPool->setText("Not initialized");
         }
     }
 
-    // --- Input Ready Queue ---
-    {
-        auto storeStats = InputFrameArenaStore::getInstance().getStats();
-        size_t sz  = storeStats.ready_frames;
-        size_t cap = storeStats.max_ready_frames;
-        if (cap > 0) {
-            int pct = static_cast<int>(100 * sz / cap);
-            m_barDetQueue->setValue(pct);
-            m_lblDetQueue->setText(QString("ReadyFrames %1 / %2  (InflightFrames %3, Dropped %4)")
-                                       .arg(sz).arg(cap)
-                                       .arg(storeStats.inflight_frames)
-                                       .arg(storeStats.dropped_frames));
-        } else {
-            m_barDetQueue->setValue(0);
-            m_lblDetQueue->setText("Not initialized");
-        }
-    }
+    // Output Ready Queue/Bottleneck removed as requested.
+
 
     // --- Throughput (swap-and-read) ---
     auto& ps = PipelineStats::getInstance();
@@ -1213,52 +1426,8 @@ void AdvancedSettingsDialog::refreshDashboard()
 
     }
 
-    // --- Bottleneck Analysis ---
-    {
-        uint64_t w_total  = w_pop_empty + w_batches;
-        double idle_pct   = (w_total > 0) ? 100.0 * w_pop_empty / w_total : 0.0;
-        double avg_slot_ms = slot_wait_ms;
-        double input_fps = decode_fps;
-        double infer_ratio = (input_fps > 1e-6) ? (infer_fps / input_fps) : 1.0;
-        double dq_drop_ps = dropped / interval;
-        double max_batch_cfg = std::max(1.0, static_cast<double>(m_spinBatch ? m_spinBatch->value() : 1));
-        double batch_util = avg_batch / max_batch_cfg;
-        uint64_t fail_total = w_no_slot + w_no_stream + w_alloc_in_fail + w_alloc_out_fail + w_submit_fail;
-        auto storeStats = InputFrameArenaStore::getInstance().getStats();
-        size_t dq_sz = storeStats.ready_frames;
-        size_t dq_cap = storeStats.max_ready_frames;
-
-        QString analysis;
-        if (decode_fps < 1.0 && infer_fps < 1.0) {
-            analysis = "⏸ Idle — 无活跃通道 / No active channels";
-        } else if (infer_fps < 1.0 && fail_total > 0) {
-            analysis = QString("🔴 WORKER-FAILURE / 推理任务失败\n"
-                "fail(total=%1): no_slot=%2, no_stream=%3, alloc_in=%4, alloc_out=%5, submit=%6。\n"
-                "建议: 优先检查 Arena 容量（input/output frames）与 TRT 提交路径。")
-                .arg(fail_total).arg(w_no_slot).arg(w_no_stream).arg(w_alloc_in_fail).arg(w_alloc_out_fail).arg(w_submit_fail);
-        } else if (infer_ratio < 0.92 && (dq_drop_ps > 1.0 || dq_sz > dq_cap * 0.2 || batch_util < 0.45)) {
-            analysis = QString("🔴 INFERENCE-LIMITED / 推理并行不足\n"
-                "Input=%1 fps, Infer=%2 fps, Gap=%3 fps, AvgBatch=%4/%5。\n"
-                "建议: 提高并行 Worker 或提升微批聚合利用率。")
-                .arg(input_fps, 0, 'f', 1)
-                .arg(infer_fps, 0, 'f', 1)
-                .arg(std::max(0.0, input_fps - infer_fps), 0, 'f', 1)
-                .arg(avg_batch, 0, 'f', 1)
-                .arg(max_batch_cfg, 0, 'f', 0);
-        } else if (idle_pct > 65.0 && infer_ratio >= 0.92) {
-            analysis = QString("🟡 INPUT-LIMITED / 输入供给不足\n"
-                "Workers 空转 %1%%，当前输入速率本身偏低。\n"
-                "建议: 增加活跃通道或提高源输入速率。")
-                .arg(idle_pct, 0, 'f', 1);
-        } else if (avg_slot_ms > 5.0) {
-            analysis = QString("🟡 SLOT-LIMITED / 显存槽瓶颈\n"
-                "Slot 等待 %1ms/batch。\n"
-                "建议: 增加 SlotPool 数量或降低并行/批量。").arg(avg_slot_ms, 0, 'f', 1);
-        } else {
-            analysis = "🟢 BALANCED / 均衡\n管线各阶段匹配良好。";
-        }
-        m_lblBottleneck->setText(analysis);
-    }
+    // --- Bottleneck Analysis removed ---
+    // (Calculation code removed to save resources as requested)
 
     // 生成可复制的文本报告，方便一键复制到剪贴板
     {

@@ -36,6 +36,10 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
 {
+    // 初始化主上下文，避免后续 VideoDecoder 和 TRTDetector 上下文不一致导致 CUDA 错误
+    // 无论是先点击 Detect 还是先加载视频，都统一使用主线程上下文
+    cudaFree(0);
+
     ui->setupUi(this);
 
     ui->btn_snapshot->setIcon(style()->standardIcon(QStyle::SP_DialogSaveButton));
@@ -117,6 +121,7 @@ MainWindow::MainWindow(QWidget *parent)
         m_modelPath       = s.modelPath;
         m_classesPath     = s.classesPath;
         m_displayConfThreshold = std::clamp(s.displayConfThreshold, 0.01, 1.0);
+        m_autoLoop        = s.autoLoop;
     }
 
     VideoWidget::setClassesFilePath(m_classesPath);
@@ -517,6 +522,11 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 
 void MainWindow::on_btn_browse_clicked()
 {
+    if (m_detectionEnabled) {
+        QMessageBox::warning(this, QString::fromUtf8("操作已阻止"), QString::fromUtf8("请先停止检测再添加或更改视频源。"));
+        return;
+    }
+
     int lockedIndex = m_currentChannelIndex; // 锁定当前操作的频道索引
     int typeIndex = ui->comboBox_sourceType->currentIndex();
     QString filter;
@@ -1116,6 +1126,23 @@ void MainWindow::onPlaybackFinished(int channel_id)
         return;
     }
 
+    // 用户设置：自动循环播放
+    if (m_autoLoop) {
+        if (channel_id == -1 && m_analysisDecoder) {
+             m_analysisDecoder->seek(0);
+             m_analysisDecoder->setPaused(false);
+             return;
+        } else if (channel_id >= 0 && m_decoders.contains(channel_id)) {
+            // 清除上一轮的检测结果，避免显示旧框
+            DetectionResults::getInstance().clear(channel_id);
+            ChannelResultQueue::getInstance().clearChannel(channel_id);
+            // Seek 并继续
+            m_decoders[channel_id]->seek(0);
+            m_decoders[channel_id]->setPaused(false);
+            return;
+        }
+    }
+
     // 区分独立解码器和网格模式解码器
     if (channel_id == -1) {
         // 详情模式：独立解码器播放结束
@@ -1263,7 +1290,7 @@ void MainWindow::startDetection()
         int effectiveBatch = std::min(m_workerMaxBatch, TRTDetector::getInstance().getMaxBatch());
         int input_frames = std::max(16, m_inputArenaFrames);
         int output_frames = std::max(16, m_outputArenaFrames);
-        size_t desiredSlots = 512;
+        size_t desiredSlots = 30; // User requested reduction from 512 to 30
 
         size_t input_bytes_per_frame = static_cast<size_t>(3) * model_w * model_h * sizeof(float);
         size_t output_bytes_per_frame = TRTDetector::getInstance().getOutputBytesPerFrame();
@@ -1946,6 +1973,7 @@ void MainWindow::openAdvancedSettings()
     cur.classesPath    = m_classesPath;
     cur.statsInterval  = m_pipelineStatsTimer ? m_pipelineStatsTimer->interval() / 1000 : 5;
     cur.displayConfThreshold = m_displayConfThreshold;
+    cur.autoLoop       = m_autoLoop;
     m_advancedDialog->setSettings(cur);
     m_advancedDialog->show();
     m_advancedDialog->raise();
@@ -1960,6 +1988,7 @@ void MainWindow::applySettings(const AdvancedSettingsDialog::Settings& s)
     m_inferenceStreams = std::max(1, s.inferenceStreams);
     m_workerMaxBatch   = s.workerMaxBatch;
     m_modelPath        = s.modelPath;
+    m_autoLoop         = s.autoLoop;
     m_displayConfThreshold = std::clamp(s.displayConfThreshold, 0.01, 1.0);
 
     // 如果 classesPath 变更，清空已加载的类别名称以触发重新加载
@@ -2065,6 +2094,9 @@ void MainWindow::startChannel(int channel_id)
 
     // 允许该通道进入检测队列
     InputFrameArenaStore::getInstance().enableChannel(channel_id);
+    // Explicitly confirm channel enabled and ready for push
+    // Debugging print to confirm logic flow
+    // fprintf(stderr, "[MainWindow] Channel %d enabled for detection input.\n", channel_id);
 
     // 如果检测正在运行且是图片源，确保队列已就绪并记录诊断信息
     if (m_detectionEnabled && m_channelSettings[channel_id].sourceTypeIndex == 3) {

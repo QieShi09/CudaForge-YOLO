@@ -72,6 +72,72 @@ std::atomic<size_t> VideoDecoder::s_total_standalone_frame_vram_bytes{0};
 std::atomic<int> VideoDecoder::s_hw_decoder_count{0};
 std::atomic<int> VideoDecoder::s_sw_decoder_count{0};
 
+// Display pool static storage
+std::mutex VideoDecoder::s_display_pool_mutex;
+std::vector<uint8_t*> VideoDecoder::s_display_pool_pages;
+std::vector<uint8_t*> VideoDecoder::s_display_pool_free;
+size_t VideoDecoder::s_display_pool_frame_size = 0;
+bool VideoDecoder::s_display_pool_inited = false;
+
+// Display pool implementation
+void VideoDecoder::initDisplayPool(size_t width, size_t height)
+{
+    std::lock_guard<std::mutex> lk(s_display_pool_mutex);
+    if (s_display_pool_inited) return;
+    if (width == 0 || height == 0) return;
+    size_t frame_bytes = static_cast<size_t>(width) * static_cast<size_t>(height) * 4; // RGBA
+    // choose a modest pool size to avoid OOM; can be tuned later
+    int pool_count = 8;
+    s_display_pool_frame_size = frame_bytes;
+    for (int i = 0; i < pool_count; ++i) {
+        uint8_t* p = nullptr;
+        if (cudaMalloc(&p, frame_bytes) != cudaSuccess) {
+            // stop if allocation fails
+            if (p) cudaFree(p);
+            break;
+        }
+        s_display_pool_pages.push_back(p);
+        s_display_pool_free.push_back(p);
+    }
+    s_display_pool_inited = !s_display_pool_pages.empty();
+}
+
+void VideoDecoder::releaseDisplayPool()
+{
+    std::lock_guard<std::mutex> lk(s_display_pool_mutex);
+    for (auto p : s_display_pool_pages) {
+        if (p) cudaFree(p);
+    }
+    s_display_pool_pages.clear();
+    s_display_pool_free.clear();
+    s_display_pool_frame_size = 0;
+    s_display_pool_inited = false;
+}
+
+uint8_t* VideoDecoder::getDisplayBufferFromPool()
+{
+    std::lock_guard<std::mutex> lk(s_display_pool_mutex);
+    if (!s_display_pool_inited || s_display_pool_free.empty()) return nullptr;
+    uint8_t* p = s_display_pool_free.back();
+    s_display_pool_free.pop_back();
+    return p;
+}
+
+void VideoDecoder::returnDisplayBufferToPool(uint8_t* ptr)
+{
+    if (!ptr) return;
+    std::lock_guard<std::mutex> lk(s_display_pool_mutex);
+    // only accept buffers of the pool (best-effort)
+    s_display_pool_free.push_back(ptr);
+}
+
+void VideoDecoder::releaseDisplayBufferCallback(void* /*opaque*/, uint8_t* data)
+{
+    if (!data) return;
+    std::lock_guard<std::mutex> lk(s_display_pool_mutex);
+    s_display_pool_free.push_back(data);
+}
+
 size_t VideoDecoder::totalDecoderVramBytes() {
     return s_total_decoder_vram_bytes.load(std::memory_order_relaxed);
 }

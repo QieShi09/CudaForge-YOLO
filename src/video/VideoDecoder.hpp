@@ -82,6 +82,18 @@ public Q_SLOTS:
     // 设置当前检测 Epoch (用于防止旧帧覆盖新结果)
     void setChannelEpoch(uint64_t epoch);
 
+    // --- Display Pool Management for Zero-Middleware Malloc ---
+    // Instead of malloc/free per frame, we use a fixed pool of display buffers
+    // allocated ONCE at startup. If pool is empty, we drop display frames.
+    // Detection path uses direct NVDEC pointers (zero copy, zero alloc).
+    void initDisplayPool(size_t width, size_t height);
+    void releaseDisplayPool();
+    uint8_t* getDisplayBufferFromPool();
+    void returnDisplayBufferToPool(uint8_t* ptr);
+
+    // Static callback for AVBufferRef
+    static void releaseDisplayBufferCallback(void* opaque, uint8_t* data);
+
     // 统计：解码器显存与数量（估算）
     static size_t totalDecoderVramBytes();
     static size_t totalStandaloneFrameVramBytes();
@@ -96,6 +108,14 @@ Q_SIGNALS:
     void playbackFinished(int channel_id);
 
 private:
+    // 全局显示缓冲池
+    static std::mutex s_display_pool_mutex;
+    static std::vector<uint8_t*> s_display_pool_pages;
+    static std::vector<uint8_t*> s_display_pool_free;
+    static size_t s_display_pool_frame_size;
+    static bool s_display_pool_inited;
+    
+
     bool processImageSource();
     bool enqueueDetectionTensorFromNV12Frame(const AVFrame* frame);
     bool enqueueDetectionTensorFromRGBA(const uint8_t* dev_rgba, int width, int height, int pitch);

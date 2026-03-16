@@ -14,6 +14,7 @@ class QLabel;
 class QProgressBar;
 class QGroupBox;
 class QComboBox;
+class QCheckBox;
 class QSizeGrip;
 class ArenaStateBar;
 namespace Ui { class AdvancedSettingsDialog; }
@@ -38,6 +39,7 @@ public:
         QString classesPath = "src/engines/class.txt";
         int statsInterval = 5;  // 性能统计间隔（秒）
         double displayConfThreshold = 0.55;
+        bool autoLoop = false;  // 自动循环播放
     };
 
     explicit AdvancedSettingsDialog(QWidget *parent = nullptr);
@@ -78,6 +80,8 @@ private:
     QWidget* m_titleBar = nullptr;
     QLabel*  m_titleLabel = nullptr;
     QPushButton* m_btnCloseDialog = nullptr;
+    QPushButton* m_btnShrink = nullptr;
+    QPushButton* m_btnMax = nullptr;
     QSizeGrip*   m_resizeGrip = nullptr;
     bool m_dragging = false;
     QPoint m_dragOffset;
@@ -96,6 +100,7 @@ private:
     QPushButton* m_btnBrowseClasses = nullptr;
     QPushButton* m_btnApply = nullptr;
     QPushButton* m_btnDefaults = nullptr;
+    QCheckBox*   m_chkAutoLoop = nullptr;
 
     // --- 性能仪表盘控件 ---
     QLabel*       m_lblGpuMem = nullptr;

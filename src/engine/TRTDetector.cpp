@@ -203,7 +203,6 @@ void TRTDetector::shutdown() {
     ctx_alive_.store(0, std::memory_order_relaxed);
     ctx_active_bytes_.store(0, std::memory_order_relaxed);
     trt_runtime_bytes_.store(0, std::memory_order_relaxed);
-    std::cout << "[TRTDetector] Context created: " << ctx_created_.load() << std::endl;
 }
 
 bool TRTDetector::load(const std::string& model_path) {
@@ -277,13 +276,10 @@ bool TRTDetector::load(const std::string& model_path) {
                                                  nvinfer1::OptProfileSelector::kMAX);
         max_batch = maxDims.d[0];
         if (max_batch <= 0) max_batch = 1; // 安全兜底
-        std::cout << "[TRTDetector] Dynamic batch detected, profile max batch = " << max_batch << std::endl;
     } else {
         max_batch = in_dims.d[0];
     }
     if (max_batch > batch_limit) {
-        std::cout << "[TRTDetector] Clamp max batch: " << max_batch
-                  << " -> " << batch_limit << " (CUDAFORGE_MAX_DETECT_BATCH)" << std::endl;
         max_batch = batch_limit;
     }
     for (int i = 0; i < out_dims.nbDims; ++i) {
@@ -319,20 +315,6 @@ bool TRTDetector::load(const std::string& model_path) {
         output_box_size_ = out_dims.d[2];
     }
 
-    std::cout << "[TRTDetector] Model Loaded: " << model_path << std::endl;
-    std::cout << "[TRTDetector] Input Tensor: " << input_tensor_name_ << ", Shape: [";
-    for (int i = 0; i < in_dims.nbDims; ++i) {
-        std::cout << in_dims.d[i];
-        if (i < in_dims.nbDims - 1) std::cout << ",";
-    }
-    std::cout << "]" << std::endl;
-    std::cout << "[TRTDetector] Output Tensor: " << output_tensor_name_ << ", Shape: [";
-    for (int i = 0; i < out_dims.nbDims; ++i) {
-        std::cout << out_dims.d[i];
-        if (i < out_dims.nbDims - 1) std::cout << ",";
-    }
-    std::cout << "], Elements: " << elements << ", Size: " << output_size_bytes_ << " bytes" << std::endl;
-
     // 检测是否支持动态 shape：若 input dims 中存在 <= 0 的维度，视为支持动态
     dynamic_shape_supported_ = false;
     try {
@@ -353,7 +335,6 @@ bool TRTDetector::load(const std::string& model_path) {
         std::lock_guard<std::mutex> lk(ctx_mem_mutex_);
         ctx_mem_bytes_.clear();
     }
-    std::cout << "[TRTDetector] Ready. Contexts are managed by workers." << std::endl;
     return true;
 }
 
@@ -689,18 +670,6 @@ std::vector<std::vector<TRTDetector::Detection>> TRTDetector::parseDetections(co
                 det.conf = conf;
                 det.class_id = class_id;
                 results[b].push_back(det);
-
-                if (!s_parse_debug_printed.load(std::memory_order_relaxed) && b == 0 && i < 3) {
-                    bool expected = false;
-                    if (s_parse_debug_printed.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-                        std::cerr << "[TRTDetector] Parse debug: transposed=" << (transposed_layout ? 1 : 0)
-                                  << " parsed_num_boxes=" << parsed_num_boxes
-                                  << " parsed_box_size=" << parsed_box_size
-                                  << " raw=[" << box[0] << "," << box[1] << "," << box[2] << "," << box[3]
-                                  << "," << box[4] << "," << box[5] << "]"
-                                  << " => class=" << class_id << " conf=" << conf << std::endl;
-                    }
-                }
             }
         }
 

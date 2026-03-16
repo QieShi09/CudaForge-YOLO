@@ -120,6 +120,7 @@ private:
     int m_inputArenaFrames = 200;
     int m_outputArenaFrames = 200;
     double m_displayConfThreshold = 0.55;
+    bool m_autoLoop = false; // 自动循环播放
     QString m_modelPath = "/home/zzx/code/Qt/CudaForge-YOLO/src/engines/yolo26n.engine";
     std::vector<QString> m_classNames;
     QDateTime m_detectionStartTime;
